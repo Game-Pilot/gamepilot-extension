@@ -53,16 +53,23 @@
       },
       experience,
       stamina,
-      shopOpen: Boolean(document.querySelector(".shop-window"))
+      shopOpen: isVisible(document.querySelector(".shop-window"))
     };
   }
 
-  function waitFor(selector, timeout = 2500) {
+  function isVisible(element) {
+    if (!element || element.hidden) return false;
+    const style = window.getComputedStyle(element);
+    const box = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+  }
+
+  function waitForVisible(selector, timeout = 2500) {
     return new Promise((resolve) => {
       const startedAt = Date.now();
       const check = () => {
         const element = document.querySelector(selector);
-        if (element) return resolve(element);
+        if (isVisible(element)) return resolve(element);
         if (Date.now() - startedAt >= timeout) return resolve(null);
         window.setTimeout(check, 100);
       };
@@ -71,12 +78,12 @@
   }
 
   async function openStore() {
-    if (document.querySelector(".shop-window")) return { ok: true, alreadyOpen: true };
+    if (isVisible(document.querySelector(".shop-window"))) return { ok: true, alreadyOpen: true };
     if (readState().inHunt) return { ok: false, error: "Saia da caçada antes de abrir a loja" };
     const button = document.querySelector("#nav-store");
     if (!button) return { ok: false, error: "Botão da loja não encontrado nesta tela" };
     button.click();
-    const shop = await waitFor(".shop-window");
+    const shop = await waitForVisible(".shop-window");
     return shop
       ? { ok: true, alreadyOpen: false }
       : { ok: false, error: "A loja não abriu após o comando" };
