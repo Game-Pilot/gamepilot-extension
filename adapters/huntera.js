@@ -53,7 +53,7 @@
       },
       experience,
       stamina,
-      shopOpen: isVisible(document.querySelector(".shop-window"))
+      shopOpen: isVisible(document.querySelector(".trade-window"))
     };
   }
 
@@ -78,12 +78,12 @@
   }
 
   async function openStore() {
-    if (isVisible(document.querySelector(".shop-window"))) return { ok: true, alreadyOpen: true };
+    if (isVisible(document.querySelector(".trade-window"))) return { ok: true, alreadyOpen: true };
     if (readState().inHunt) return { ok: false, error: "Saia da caçada antes de abrir a loja" };
     const button = document.querySelector("#nav-store");
     if (!button) return { ok: false, error: "Botão da loja não encontrado nesta tela" };
     button.click();
-    const shop = await waitForVisible(".shop-window");
+    const shop = await waitForVisible(".trade-window");
     return shop
       ? { ok: true, alreadyOpen: false }
       : { ok: false, error: "A loja não abriu após o comando" };
