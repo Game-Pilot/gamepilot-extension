@@ -140,8 +140,17 @@
   async function leaveHunt() {
     if (!readState().inHunt) return { ok: true, alreadyOut: true };
     const button = document.querySelector("#nav-leave-hunt"); if (!button) return { ok: false, error: "Botão para sair da caçada não encontrado" };
-    button.click(); const closed = await waitFor("#nav-leave-hunt", 5000, false);
-    return closed ? { ok: true } : { ok: false, error: "A caçada não terminou após o comando" };
+    button.click();
+    const returned = await new Promise((resolve) => {
+      const startedAt = Date.now();
+      const check = () => {
+        if (!readState().inHunt) return resolve(true);
+        if (Date.now() - startedAt >= 15000) return resolve(false);
+        window.setTimeout(check, 100);
+      };
+      check();
+    });
+    return returned ? { ok: true } : { ok: false, error: "A caçada não terminou após o comando" };
   }
 
   async function openStore({ autoLeave = true } = {}) {

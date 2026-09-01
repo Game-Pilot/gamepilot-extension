@@ -32,7 +32,7 @@ async function handleCommand(command, commandId, payload = {}) {
       if (result.ok) { mode = "hunting"; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : "Caçada iniciada", details: { payload } }); }
     } else if (command === "stop" || command === "return-town") {
       automationEnabled = false; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
-      if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload } }); }
+      if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
     } else if (command === "open-store") {
       mode = "selling"; showBanner("abrindo loja"); result = await adapter?.openStore?.({ ...payload, autoLeave: true }) || result;
       if (result.ok) await sendEvent({ type: "shop.opened", message: result.alreadyOpen ? "Loja já estava aberta" : "Loja aberta pela extensão", details: { payload } });
