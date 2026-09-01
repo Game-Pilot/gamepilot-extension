@@ -29,5 +29,6 @@ function sendState() {
   });
 }
 
+showBanner("extensão carregada");
 sendState();
 setInterval(sendState, 3000);
