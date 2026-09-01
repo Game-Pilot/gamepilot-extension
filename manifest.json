@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "GamePilot Local Agent",
+  "version": "0.1.0",
+  "description": "Agente local do MVP GamePilot para validar a conexão com uma aba do Huntera.",
+  "permissions": [],
+  "host_permissions": [
+    "https://huntera.com.br/*",
+    "http://127.0.0.1:4317/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://huntera.com.br/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "GamePilot Local Agent",
+    "default_popup": "popup.html"
+  }
+}
