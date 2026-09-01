@@ -1,10 +1,10 @@
 # GamePilot Chrome Extension
 
-Extensão Manifest V3 do MVP. Ela valida a comunicação com uma aba do Huntera, lê URL/título, envia heartbeat à API e recebe comandos do painel.
+Extensão Manifest V3 do MVP. Ela conecta uma aba do Huntera ao GamePilot, envia heartbeat/telemetria à API e recebe comandos do painel.
 
-O adaptador Huntera detecta personagem, vocação, level, vida, mana, experiência, stamina e se a aba está em uma caçada. O primeiro comando real é open-store: ele clica no botão público da loja, confirma a janela e não vende itens.
+O adaptador Huntera detecta personagem, vocação, level, vida, mana, experiência, stamina, gold, capacidade, métricas do analisador e estado da caçada. Os comandos do MVP são iniciar, parar/retornar, abrir loja e vender itens comuns quando o mercador estiver disponível. Itens de leilão não são enviados automaticamente.
 
-Se o personagem estiver em caçada, se o botão não existir ou se a janela não abrir, a extensão reporta falha e não continua.
+Se o botão não existir ou a tela não confirmar a ação, a extensão reporta falha para o painel e interrompe o ciclo.
 
 ## Carregar localmente
 
