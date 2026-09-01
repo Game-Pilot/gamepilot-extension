@@ -97,6 +97,25 @@
     return monster === normalizedTarget;
   }
 
+  function huntStarted() {
+    if (visible(document.querySelector("#nav-leave-hunt"))) return true;
+    const selected = [...document.querySelectorAll(".hunt-window .hunt-entry")].find((entry) => visible(entry) && entry.classList.contains("selected"));
+    const startButton = firstVisible("#hunt-start");
+    return Boolean(selected && startButton?.disabled && /trocar/i.test(startButton.textContent || ""));
+  }
+
+  function waitForHuntStarted(timeout = 12000) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const check = () => {
+        if (huntStarted()) return resolve(true);
+        if (Date.now() - startedAt >= timeout) return resolve(false);
+        window.setTimeout(check, 100);
+      };
+      check();
+    });
+  }
+
   async function startHunt(payload = {}) {
     if (readState().inHunt) return { ok: true, alreadyStarted: true };
     const hunt = payload.hunt || {};
@@ -114,7 +133,7 @@
     const startButton = firstVisible("#hunt-start");
     if (!startButton) return { ok: false, error: "Botão para confirmar a caçada não encontrado" };
     startButton.click();
-    const started = await waitFor("#nav-leave-hunt", 5000, true);
+    const started = await waitForHuntStarted();
     return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey } : { ok: false, error: "A tela de caçada não confirmou o início" };
   }
 
