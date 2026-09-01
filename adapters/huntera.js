@@ -80,11 +80,42 @@
     });
   }
 
-  async function startHunt() {
+  async function openHuntWindow() {
+    if (visible(document.querySelector(".hunt-window"))) return { ok: true, alreadyOpen: true };
+    const button = firstVisible("#nav-start-hunt");
+    if (!button) return { ok: false, error: "Botão Caçar não encontrado nesta tela" };
+    button.click();
+    const opened = await waitFor(".hunt-window", 5000, true);
+    return opened ? { ok: true } : { ok: false, error: "O seletor de caçadas não abriu" };
+  }
+
+  function matchesHunt(entry, target) {
+    const normalizedTarget = String(target || "").trim().toLowerCase();
+    if (!normalizedTarget) return false;
+    if (entry.dataset.huntId === target) return true;
+    const monster = entry.querySelector(".hunt-entry-monster")?.textContent?.trim().toLowerCase() || "";
+    return monster === normalizedTarget;
+  }
+
+  async function startHunt(payload = {}) {
     if (readState().inHunt) return { ok: true, alreadyStarted: true };
-    const button = document.querySelector("#nav-start-hunt"); if (!button) return { ok: false, error: "Botão Caçar não encontrado nesta tela" };
-    button.click(); const started = await waitFor("#nav-leave-hunt", 5000, true);
-    return started ? { ok: true } : { ok: false, error: "A tela de caçada não confirmou o início" };
+    const hunt = payload.hunt || {};
+    const target = hunt.spotKey || hunt.monsterKey;
+    if (!target || target === "default") return { ok: false, error: "Nenhuma caçada foi selecionada" };
+    const opened = await openHuntWindow();
+    if (!opened.ok) return opened;
+    const entry = [...document.querySelectorAll(".hunt-window .hunt-entry")].find((item) => visible(item) && matchesHunt(item, target));
+    if (!entry) return { ok: false, error: `Caçada ${target} não encontrada no Huntera` };
+    entry.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    const tierName = String(hunt.pullTier || "Cauteloso").trim().toLowerCase();
+    const tier = [...document.querySelectorAll(".hunt-window .hunt-tier")].find((item) => item.textContent.trim().toLowerCase() === tierName);
+    if (tier) tier.click();
+    const startButton = firstVisible("#hunt-start");
+    if (!startButton) return { ok: false, error: "Botão para confirmar a caçada não encontrado" };
+    startButton.click();
+    const started = await waitFor("#nav-leave-hunt", 5000, true);
+    return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey } : { ok: false, error: "A tela de caçada não confirmou o início" };
   }
 
   async function leaveHunt() {
