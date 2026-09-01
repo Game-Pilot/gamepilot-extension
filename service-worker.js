@@ -15,13 +15,29 @@ async function api(path, options = {}) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "agent-event") {
+    (async () => {
+      await api("/api/v1/agent/event", {
+        method: "POST",
+        body: JSON.stringify(message.event || {})
+      });
+      sendResponse({ ok: true });
+    })().catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message.type !== "page-state") return;
 
   (async () => {
     const state = { ...message.state, tabId: sender.tab?.id };
     await api("/api/v1/agent/state", { method: "POST", body: JSON.stringify(state) });
     const command = await api("/api/v1/agent/commands");
-    sendResponse({ ok: true, command: command.command });
+    sendResponse({
+      ok: true,
+      command: command.command,
+      commandId: command.commandId,
+      payload: command.payload || {}
+    });
   })().catch((error) => sendResponse({ ok: false, error: error.message }));
 
   return true;
