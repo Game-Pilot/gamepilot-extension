@@ -24,14 +24,33 @@
   }
 
   function metric(text, label) {
-    const match = text.match(new RegExp(`${label}\\s+([\\d.,]+)`, "i")); return match ? number(match[1]) : null;
+    const match = text.match(new RegExp(`${label}\\s+([\\d.,]+)`, "i")); return match ? analyzerNumber(match[1]) : null;
+  }
+
+  function analyzerNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const raw = String(value).trim().replace(/[^\d,.-]/g, "");
+    if (!raw) return null;
+    if (raw.includes(",") && raw.includes(".")) return Number(raw.lastIndexOf(",") > raw.lastIndexOf(".") ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, ""));
+    if (raw.includes(",")) {
+      const groups = raw.split(",");
+      if (groups.length > 1 && groups.slice(1).every((group) => /^\d{3}$/.test(group))) return Number(raw.replace(/,/g, ""));
+      return Number(raw.replace(",", "."));
+    }
+    return Number(raw);
+  }
+
+  function analyzerMetric(text, dataValue, label) {
+    const selector = '.hunt-analyzer-window [data-value="' + dataValue + '"], .analyzer-body [data-value="' + dataValue + '"]';
+    const element = firstVisible(selector);
+    return element ? analyzerNumber(element.textContent) : metric(text, label);
   }
 
   function readLootMetrics() {
-    const text = firstVisible(".analyzer-body")?.innerText?.replace(/\s+/g, " ") || "";
+    const text = firstVisible(".hunt-analyzer-window, .analyzer-body")?.innerText?.replace(/\s+/g, " ") || "";
     const metrics = {
-      kills: metric(text, "Inimigos mortos"), xpGained: metric(text, "XP ganha"), goldEarned: metric(text, "Gold"), goldSpent: metric(text, "Gasto"),
-      xpPerHour: metric(text, "XP/h"), goldPerHour: metric(text, "Gold/h"), spentPerHour: metric(text, "Gasto/h"), balancePerHour: metric(text, "Saldo/h")
+      kills: analyzerMetric(text, "kills", "Inimigos mortos"), xpGained: analyzerMetric(text, "experience", "XP ganha"), goldEarned: analyzerMetric(text, "loot", "Gold"), goldSpent: analyzerMetric(text, "waste", "Gasto"),
+      xpPerHour: analyzerMetric(text, "experience-hour", "XP/h"), goldPerHour: analyzerMetric(text, "loot-hour", "Gold/h"), spentPerHour: analyzerMetric(text, "waste-hour", "Gasto/h"), balancePerHour: analyzerMetric(text, "balance-hour", "Saldo/h")
     };
     const loot = [...document.querySelectorAll(".analyzer-item-row")].map((row) => ({ name: row.querySelector(".analyzer-item-name")?.textContent?.trim() || null, text: row.innerText.trim() })).filter((item) => item.name);
     return { ...metrics, loot };
@@ -41,7 +60,8 @@
     const element = firstVisible(".hud-capacity"); if (!element) return null;
     const fill = element.querySelector(".fill"); const strong = element.querySelector("strong"); const title = strong?.getAttribute("title") || "";
     const capacity = title.match(/Carregando\s+([\d.]+)\s+de\s+([\d.]+)\s+oz/i);
-    return { percent: fill ? Number.parseFloat(fill.style.width) || null : null, currentOz: capacity ? number(capacity[1]) : number(strong?.textContent), maxOz: capacity ? number(capacity[2]) : null };
+    const percent = fill ? Number.parseFloat(fill.style.width) : null;
+    return { percent: Number.isFinite(percent) ? Math.round(percent * 10) / 10 : null, currentOz: capacity ? number(capacity[1]) : number(strong?.textContent), maxOz: capacity ? number(capacity[2]) : null };
   }
 
   function readState() {
@@ -53,16 +73,19 @@
     const expTitle = firstVisible(".hud-exp")?.getAttribute("title") || "";
     const expMatch = expTitle.match(/([\d.,]+)\s*\/\s*([\d.,]+)/);
     const premiumOffer = visible(document.querySelector(".analyzer-locked-buy"));
-    const stateText = document.body?.innerText || "";
+    const coinsElement = firstVisible("#header-coins .header-coins-count, [aria-label=\"Huntera Coins\"] .header-coins-count");
+    const coins = analyzerNumber(coinsElement?.textContent);
+    const experience = expMatch ? { current: number(expMatch[1]), max: number(expMatch[2]) } : null;
+    if (experience?.current !== null && experience?.max) experience.percent = Math.round((experience.current / experience.max) * 1000) / 10;
     return {
       gameKey: "huntera", detected: Boolean(name), loggedIn: Boolean(name), page: location.pathname,
       inHunt: visible(document.querySelector("#nav-leave-hunt")), shopOpen: visible(document.querySelector(".trade-window")),
       premium: premiumOffer ? false : (document.querySelector(".analyzer-body") ? true : null),
       character: name ? { name, externalRef: name, vocation, level: levelMatch ? Number(levelMatch[1]) : null, premium: premiumOffer ? false : null } : null,
       resources: { health: bar(".hud-hp"), mana: bar(".hud-mp") },
-      experience: expMatch ? { current: number(expMatch[1]), max: number(expMatch[2]) } : null,
+      experience,
       stamina: firstVisible(".hud-stamina-clock")?.textContent?.trim() || null,
-      gold: number(firstVisible("#header-gold")?.textContent), backpack: readBackpack(), metrics: readLootMetrics(),
+      gold: number(firstVisible("#header-gold")?.textContent), coins, backpack: readBackpack(), metrics: readLootMetrics(),
       target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null }
     };
   }
