@@ -54,7 +54,7 @@ async function handleCommand(command, commandId, payload = {}) {
       mode = "selling"; showBanner("abrindo loja"); result = await adapter?.openStore?.({ ...payload, autoLeave: true }) || result;
       if (result.ok) await sendEvent({ type: "shop.opened", message: result.alreadyOpen ? "Loja já estava aberta" : "Loja aberta pela extensão", details: { payload } });
     } else if (command === "sell-items") {
-      mode = "selling"; showBanner("vendendo itens comuns"); result = await adapter?.sellItems?.(payload) || result;
+      mode = "selling"; showBanner("consultando o leilão e preparando a venda"); result = await adapter?.sellItems?.(payload.hunt || automationConfig) || result;
       if (result.ok) await sendEvent({ type: "items.sold", message: result.message || `Venda concluída: ${result.sold || 0} ação(ões)`, details: { ...result, payload } });
     } else if (command === "read-state") {
       result = { ok: true };
@@ -91,7 +91,7 @@ async function runAutomationCycle(gameState) {
     mode = "selling"; const opened = await adapter?.openStore?.({ autoLeave: false });
     if (!opened?.ok) throw new Error(opened?.error || "Não foi possível abrir a loja");
     await sendEvent({ type: "shop.opened", message: "Loja aberta para o ciclo automático", details: { automatic: true } });
-    const sold = await adapter?.sellItems?.();
+    const sold = await adapter?.sellItems?.(automationConfig);
     if (!sold?.ok) throw new Error(sold?.error || "Não foi possível vender os itens");
     await sendEvent({ type: "items.sold", message: sold.message || `Ciclo vendeu ${sold.sold || 0} ação(ões)`, details: { ...sold, automatic: true } });
     await adapter?.closeStore?.();

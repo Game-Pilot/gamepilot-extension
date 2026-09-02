@@ -103,6 +103,32 @@
     });
   }
 
+  function waitUntil(predicate, timeout = 5000, interval = 80) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const check = () => {
+        let matched = false;
+        try { matched = Boolean(predicate()); } catch { matched = false; }
+        if (matched) return resolve(true);
+        if (Date.now() - startedAt >= timeout) return resolve(false);
+        window.setTimeout(check, interval);
+      };
+      check();
+    });
+  }
+
+  function normalizeItemName(value) {
+    return String(value || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  }
+
+  function setSearchValue(input, value) {
+    if (!input) return;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
   function setSelectValue(select, value) {
     if (!select || !value || select.value === value) return;
     select.value = value;
@@ -248,7 +274,99 @@
     return shop ? { ok: true, alreadyOpen: false } : { ok: false, error: "A loja não abriu após o comando" };
   }
 
-  async function sellItems() {
+  function readNpcSellOffers(shop) {
+    return [...shop.querySelectorAll("#shop-offers .shop-offer")].filter(visible).map((offer) => {
+      const label = offer.getAttribute("aria-label") || "";
+      const match = label.match(/^(.+),\s*([\d.,]+)\s+gp\s+cada$/i);
+      const npcValue = match ? number(match[2]) : null;
+      return {
+        itemId: offer.dataset.itemId || null,
+        name: match?.[1]?.trim() || label.split(",")[0]?.trim() || null,
+        npcValue,
+        count: Number(offer.querySelector(".shop-count")?.textContent || 1) || 1,
+        element: offer
+      };
+    }).filter((item) => item.itemId && item.name && Number.isFinite(item.npcValue));
+  }
+
+  function readMarketPrices(blockSelector) {
+    const block = firstVisible(blockSelector);
+    if (!block) return [];
+    return [...block.querySelectorAll("tbody tr")].filter(visible).map((row) => {
+      const cells = [...row.querySelectorAll("td")];
+      const price = number(cells[2]?.textContent?.trim());
+      return Number.isFinite(price) ? price : null;
+    }).filter((price) => price !== null);
+  }
+
+  async function readAuctionQuote(market, item) {
+    const search = market.querySelector("#market-search");
+    setSearchValue(search, item.name);
+    const itemReady = await waitUntil(() => [...market.querySelectorAll(".market-item")].some((entry) => entry.dataset.marketItem === item.itemId || normalizeItemName(entry.querySelector(".market-item-name")?.textContent) === normalizeItemName(item.name)), 2500);
+    if (!itemReady) return { itemId: item.itemId, name: item.name, buyPrices: [], sellPrices: [], found: false };
+    const marketItem = [...market.querySelectorAll(".market-item")].find((entry) => entry.dataset.marketItem === item.itemId || normalizeItemName(entry.querySelector(".market-item-name")?.textContent) === normalizeItemName(item.name));
+    if (!marketItem) return { itemId: item.itemId, name: item.name, buyPrices: [], sellPrices: [], found: false };
+    marketItem.click();
+    await waitUntil(() => normalizeItemName(firstVisible(".market-listing-head strong")?.textContent) === normalizeItemName(item.name), 2500);
+    return { itemId: item.itemId, name: item.name, buyPrices: readMarketPrices(".market-offers-block.buy"), sellPrices: readMarketPrices(".market-offers-block.sell"), found: true };
+  }
+
+  async function readAuctionQuotes(items) {
+    const auctionTab = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "auction" && visible(tab));
+    if (!auctionTab) return { ok: false, error: "A aba do leilão não está disponível", quotes: [] };
+    auctionTab.click();
+    const market = await waitFor(".market-window", 5000, true);
+    if (!market) return { ok: false, error: "A casa de leilões não abriu", quotes: [] };
+    const ownedFilter = market.querySelector('input[name="market-list-filter"][value="owned"]');
+    if (ownedFilter && !ownedFilter.checked) {
+      ownedFilter.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
+    const quotes = [];
+    for (const item of items) quotes.push(await readAuctionQuote(market, item));
+    return { ok: true, quotes };
+  }
+
+  function auctionDecision(item, quote, config = {}) {
+    if (config.preserveAuctionItems === false) return { preserve: false, reason: "preservação desativada" };
+    const mode = ["buy", "sell", "both"].includes(config.auctionPriceMode) ? config.auctionPriceMode : "buy";
+    const buyThreshold = Math.max(0, Number(config.auctionBuyThresholdPercent ?? 50));
+    const sellThreshold = Math.max(0, Number(config.auctionSellThresholdPercent ?? 50));
+    const noBuyPolicy = config.auctionNoBuyOrderPolicy === "npc" ? "npc" : "preserve";
+    const buyPrice = quote.buyPrices.length ? Math.max(...quote.buyPrices) : null;
+    const sellPrice = quote.sellPrices.length ? Math.min(...quote.sellPrices) : null;
+    const buyPass = buyPrice !== null ? buyPrice >= item.npcValue * (1 + buyThreshold / 100) : noBuyPolicy === "preserve";
+    const sellPass = sellPrice !== null && sellPrice >= item.npcValue * (1 + sellThreshold / 100);
+    const preserve = mode === "sell" ? sellPass : mode === "both" ? buyPass && sellPass : buyPass;
+    if (!quote.found) {
+      const preserve = mode === "sell" ? false : noBuyPolicy === "preserve";
+      return { preserve, reason: mode === "sell" ? "item sem oferta de venda" : preserve ? "item não apareceu nos itens possuídos do leilão" : "item sem registro no leilão", buyPrice, sellPrice };
+    }
+    if (mode === "buy" && buyPrice === null) return { preserve: noBuyPolicy === "preserve", reason: noBuyPolicy === "preserve" ? "sem ordem de compra" : "sem ordem de compra; vender no NPC", buyPrice, sellPrice };
+    if (mode === "sell" && sellPrice === null) return { preserve: false, reason: "sem oferta de venda", buyPrice, sellPrice };
+    if (mode === "both" && (!buyPass || !sellPass)) return { preserve: false, reason: "ambos os critérios não atingidos", buyPrice, sellPrice };
+    return { preserve, reason: preserve ? `margem de ${mode === "sell" ? sellThreshold : buyThreshold}% atingida` : "valor abaixo da margem configurada", buyPrice, sellPrice };
+  }
+
+  async function sellNpcItems(shop, items) {
+    let sold = 0;
+    const soldItems = [];
+    for (const item of items.filter((entry) => !entry.preserve)) {
+      const offer = [...shop.querySelectorAll("#shop-offers .shop-offer")].find((entry) => entry.dataset.itemId === item.itemId && visible(entry));
+      if (!offer) continue;
+      offer.click();
+      const transaction = await waitFor("#shop-transaction", 2500, true);
+      const sellButton = transaction?.querySelector(".shop-buy");
+      if (!sellButton || !visible(sellButton) || sellButton.disabled) continue;
+      sellButton.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+      sold += 1;
+      soldItems.push({ itemId: item.itemId, name: item.name, count: item.count, npcValue: item.npcValue });
+    }
+    return { sold, soldItems };
+  }
+
+  async function sellItems(config = {}) {
     const opened = await openStore({ autoLeave: true }); if (!opened.ok) return opened;
     const npcTab = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "npc");
     if (!npcTab || npcTab.disabled) return { ok: true, sold: 0, auctionKept: 0, message: "Mercador indisponível nesta tela; loot foi preservado" };
@@ -256,10 +374,33 @@
     const sellTab = [...shop.querySelectorAll(".tab")].find((tab) => /vender/i.test(tab.textContent || ""));
     if (!sellTab) return { ok: true, sold: 0, message: "A aba de venda ainda não foi carregada" };
     sellTab.click();
-    const buttons = [...shop.querySelectorAll("button")].filter((button) => /vender|sell|confirmar/i.test(`${button.textContent} ${button.getAttribute("aria-label") || ""}`) && visible(button) && !button.disabled);
-    let sold = 0;
-    for (const button of buttons) { button.click(); sold += 1; await new Promise((resolve) => window.setTimeout(resolve, 120)); }
-    return { ok: true, sold, auctionKept: 0 };
+    await waitFor("#shop-offers .shop-offer", 3000, true);
+    const npcOffers = readNpcSellOffers(shop);
+    if (!npcOffers.length) return { ok: true, sold: 0, auctionKept: 0, message: "Nenhum item disponível para venda" };
+    let decisions = npcOffers.map((item) => ({ ...item, preserve: false, reason: "preservação desativada" }));
+    let auctionChecked = 0;
+    if (config.preserveAuctionItems !== false) {
+      const auction = await readAuctionQuotes(npcOffers);
+      if (auction.ok) {
+        const quotes = new Map(auction.quotes.map((quote) => [quote.itemId, quote]));
+        decisions = npcOffers.map((item) => ({ ...item, ...auctionDecision(item, quotes.get(item.itemId) || { buyPrices: [], sellPrices: [], found: false }, config) }));
+        auctionChecked = auction.quotes.filter((quote) => quote.found).length;
+      } else {
+        decisions = npcOffers.map((item) => ({ ...item, preserve: true, reason: auction.error }));
+      }
+      const npcTabAfterAuction = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "npc" && visible(tab));
+      npcTabAfterAuction?.click();
+      await waitFor(".shop-window", 3000, true);
+      const sellTabAfterAuction = [...document.querySelectorAll(".shop-window .tab")].find((tab) => /vender/i.test(tab.textContent || ""));
+      sellTabAfterAuction?.click();
+      await waitFor("#shop-offers .shop-offer", 3000, true);
+    }
+    const result = await sellNpcItems(shop, decisions);
+    const kept = decisions.filter((item) => item.preserve);
+    const message = config.preserveAuctionItems === false
+      ? `Venda concluída: ${result.sold} item(ns)`
+      : `Leilão consultado para ${auctionChecked} item(ns); ${result.sold} vendido(s) no NPC e ${kept.length} preservado(s)`;
+    return { ok: true, ...result, auctionChecked, auctionKept: kept.length, auctionItems: kept.map(({ element, ...item }) => item), decisions: decisions.map(({ element, ...item }) => item), message };
   }
 
   async function closeStore() {
