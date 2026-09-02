@@ -30,12 +30,21 @@ async function handleCommand(command, commandId, payload = {}) {
   let result = { ok: false, error: "Adaptador Huntera não carregado" };
   try {
     if (command === "start" || command === "start-hunt") {
-      automationEnabled = true; automationConfig = payload.hunt || {}; automationActions = Array.isArray(payload.actions) ? payload.actions : []; automationPayload = payload; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
-      const configured = await adapter?.configureActions?.(automationActions) || { ok: true, configured: 0 };
-      if (!configured.ok) automationEnabled = false;
+      const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
+      automationConfig = payload.hunt || {}; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
+      const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
+      if (configured.ok) { automationEnabled = true; automationActions = nextActions; automationPayload = payload; }
+      else automationEnabled = false;
       result = configured.ok ? await adapter?.startHunt?.(payload) || result : configured;
       if (configured.ok && configured.configured) await sendEvent({ type: "actions.configured", message: `${configured.configured} ação(ões) configurada(s) no personagem`, details: { configured: configured.configured, actions: automationActions } });
       if (result.ok) { mode = "hunting"; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : "Caçada iniciada", details: { payload } }); }
+    } else if (command === "configure-actions") {
+      const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
+      showBanner("atualizando ações do personagem");
+      const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
+      if (configured.ok) { automationActions = nextActions; automationPayload = { ...automationPayload, ...payload, actions: nextActions }; }
+      result = configured;
+      if (configured.ok) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) atualizada(s) no personagem`, details: { configured: configured.configured || 0, actions: nextActions, live: true } });
     } else if (command === "stop" || command === "return-town") {
       automationEnabled = false; automationActions = []; automationPayload = {}; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
