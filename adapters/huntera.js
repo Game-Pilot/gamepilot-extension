@@ -103,6 +103,69 @@
     });
   }
 
+  function setSelectValue(select, value) {
+    if (!select || !value || select.value === value) return;
+    select.value = value;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function closeActionEditor(editor) {
+    const close = editor?.querySelector(".action-close");
+    if (!close) return;
+    close.click();
+    await waitFor(".action-editor", 3000, false);
+  }
+
+  async function configureActionRule(rule) {
+    const actionKey = String(rule?.actionKey || rule?.action_key || "").trim();
+    if (!actionKey) return { ok: false, error: "Ação sem identificador" };
+    const slots = [...document.querySelectorAll("button.hud-slot.assigned")].filter(visible);
+    for (const slot of slots) {
+      slot.click();
+      const editor = await waitFor(".action-editor", 3000, true);
+      if (!editor) continue;
+      const selected = editor.querySelector(".action-choice.selected")?.dataset.actionId || null;
+      if (selected !== actionKey) {
+        await closeActionEditor(editor);
+        continue;
+      }
+
+      const resource = rule.resource === "mana" ? "mana" : "health";
+      setSelectValue(editor.querySelector(".condition-attribute"), resource);
+      setSelectValue(editor.querySelector(".condition-operator"), rule.operator === "<" ? "<" : "<=");
+
+      const valueInput = editor.querySelector(".condition-value");
+      const desired = Math.max(1, Math.min(99, Number(rule.thresholdPercent ?? rule.threshold_percent) || 1));
+      const current = Number(valueInput?.value || 0);
+      const stepButton = desired >= current ? editor.querySelector(".condition-step-up") : editor.querySelector(".condition-step-down");
+      const steps = Math.min(30, Math.ceil(Math.abs(desired - current) / 5));
+      for (let index = 0; index < steps; index += 1) {
+        stepButton?.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 18));
+      }
+
+      const conditionPercent = editor.querySelector('input[type="checkbox"]');
+      if (conditionPercent && !conditionPercent.checked) conditionPercent.click();
+      const enabledToggle = [...editor.querySelectorAll('input[type="checkbox"]')].at(-1);
+      if (enabledToggle && enabledToggle.checked !== (rule.enabled !== false)) enabledToggle.click();
+      editor.querySelector(".action-save")?.click();
+      const saved = await waitFor(".action-editor", 3000, false);
+      return saved ? { ok: true, actionKey, slot: slot.dataset.actionSlot } : { ok: false, error: `A ação ${actionKey} não confirmou o salvamento` };
+    }
+    return { ok: false, error: `A ação ${actionKey} não está atribuída à barra de ações do personagem` };
+  }
+
+  async function configureActions(rules = []) {
+    const configured = [];
+    for (const rule of Array.isArray(rules) ? rules.filter((item) => item?.enabled !== false || item?.actionKey || item?.action_key) : []) {
+      const result = await configureActionRule(rule);
+      if (!result.ok) return { ok: false, configured: configured.length, error: result.error };
+      configured.push(result);
+    }
+    return { ok: true, configured: configured.length, actions: configured };
+  }
+
   async function openHuntWindow() {
     if (visible(document.querySelector(".hunt-window"))) return { ok: true, alreadyOpen: true };
     const button = firstVisible("#nav-start-hunt");
@@ -208,5 +271,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, leaveHunt, openStore, sellItems, closeStore };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, configureActions, leaveHunt, openStore, sellItems, closeStore };
 })();

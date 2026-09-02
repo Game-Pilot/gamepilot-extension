@@ -2,6 +2,8 @@ let mode = "idle";
 let banner;
 let automationEnabled = false;
 let automationConfig = {};
+let automationActions = [];
+let automationPayload = {};
 let automationBusy = false;
 
 function showBanner(text) {
@@ -28,10 +30,14 @@ async function handleCommand(command, commandId, payload = {}) {
   let result = { ok: false, error: "Adaptador Huntera não carregado" };
   try {
     if (command === "start" || command === "start-hunt") {
-      automationEnabled = true; automationConfig = payload.hunt || {}; mode = "starting"; showBanner("iniciando caçada"); result = await adapter?.startHunt?.(payload) || result;
+      automationEnabled = true; automationConfig = payload.hunt || {}; automationActions = Array.isArray(payload.actions) ? payload.actions : []; automationPayload = payload; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
+      const configured = await adapter?.configureActions?.(automationActions) || { ok: true, configured: 0 };
+      if (!configured.ok) automationEnabled = false;
+      result = configured.ok ? await adapter?.startHunt?.(payload) || result : configured;
+      if (configured.ok && configured.configured) await sendEvent({ type: "actions.configured", message: `${configured.configured} ação(ões) configurada(s) no personagem`, details: { configured: configured.configured, actions: automationActions } });
       if (result.ok) { mode = "hunting"; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : "Caçada iniciada", details: { payload } }); }
     } else if (command === "stop" || command === "return-town") {
-      automationEnabled = false; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
+      automationEnabled = false; automationActions = []; automationPayload = {}; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
     } else if (command === "open-store") {
       mode = "selling"; showBanner("abrindo loja"); result = await adapter?.openStore?.({ ...payload, autoLeave: true }) || result;
@@ -54,12 +60,8 @@ async function handleCommand(command, commandId, payload = {}) {
 }
 
 function thresholdReached(gameState) {
-  const health = gameState?.resources?.health?.percent;
-  const mana = gameState?.resources?.mana?.percent;
   const backpack = gameState?.backpack?.percent;
-  return (health != null && health <= Number(automationConfig.minHealthPercent || 35))
-    || (mana != null && mana <= Number(automationConfig.minManaPercent || 20))
-    || (backpack != null && backpack >= Number(automationConfig.backpackReturnPercent || 85));
+  return backpack != null && backpack >= Number(automationConfig.backpackReturnPercent || 85);
 }
 
 async function runAutomationCycle(gameState) {
@@ -79,7 +81,10 @@ async function runAutomationCycle(gameState) {
     await sendEvent({ type: "items.sold", message: sold.message || `Ciclo vendeu ${sold.sold || 0} ação(ões)`, details: { ...sold, automatic: true } });
     await adapter?.closeStore?.();
     if (!automationEnabled) return;
-    mode = "starting"; const started = await adapter?.startHunt?.();
+    mode = "starting";
+    const configured = await adapter?.configureActions?.(automationActions) || { ok: true, configured: 0 };
+    if (!configured.ok) throw new Error(configured.error || "Não foi possível reaplicar as ações do personagem");
+    const started = await adapter?.startHunt?.(automationPayload);
     if (!started?.ok) throw new Error(started?.error || "Não foi possível retomar a caçada");
     mode = "hunting";
     await sendEvent({ type: "hunt.started", message: "Caçada retomada automaticamente", details: { automatic: true } });
