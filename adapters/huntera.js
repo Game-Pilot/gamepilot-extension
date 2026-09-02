@@ -159,7 +159,10 @@
     if (!tier) return { ok: false, error: `Pull ${value || "Cauteloso"} não está disponível para esta caçada` };
     if (!tierSelected(tier)) {
       tier.click();
-      const applied = await waitUntil(() => tierSelected(tier) && tierName([...document.querySelectorAll(".hunt-window .hunt-tier")].find(tierSelected)) === requested, 1800, 80);
+      const applied = await waitUntil(() => {
+        const selected = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible).find(tierSelected);
+        return Boolean(selected && tierName(selected) === requested);
+      }, 1800, 80);
       if (!applied) return { ok: false, error: `O Huntera não confirmou o pull ${value || "Cauteloso"}` };
     }
     await new Promise((resolve) => window.setTimeout(resolve, 180));
