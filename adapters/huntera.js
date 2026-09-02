@@ -121,6 +121,29 @@
     return String(value || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   }
 
+  function itemKeyFromName(value) {
+    return normalizeItemName(value).replace(/[\u0027\u2019]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  async function configureLoot(hunt = {}) {
+    await waitUntil(() => document.querySelectorAll(".hunt-window .hunt-loot-auto").length > 0, 1500);
+    const controls = [...document.querySelectorAll(".hunt-window .hunt-loot-auto")].filter((control) => !control.disabled && visible(control.closest(".hunt-loot-entry")));
+    if (!controls.length) return { ok: true, configured: 0, changed: 0 };
+    const keys = new Set((Array.isArray(hunt.lootItemKeys) ? hunt.lootItemKeys : []).map((key) => String(key)));
+    const configured = hunt.lootConfigured === true || keys.size > 0;
+    let changed = 0;
+    for (const control of controls) {
+      const entry = control.closest(".hunt-loot-entry");
+      const name = entry?.querySelector(".hunt-loot-name")?.textContent?.trim() || "";
+      const baseKey = itemKeyFromName(name);
+      const itemId = control.dataset.itemId || entry?.dataset.itemId || "";
+      const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
+      const desired = configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
+      if (control.checked !== desired) { control.click(); changed += 1; }
+    }
+    return { ok: true, configured: controls.length, changed };
+  }
+
   function setSearchValue(input, value) {
     if (!input) return;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
@@ -242,11 +265,13 @@
     const tierName = String(hunt.pullTier || "Cauteloso").trim().toLowerCase();
     const tier = [...document.querySelectorAll(".hunt-window .hunt-tier")].find((item) => item.textContent.trim().toLowerCase() === tierName);
     if (tier) tier.click();
+    const loot = await configureLoot(hunt);
+    if (!loot.ok) return loot;
     const startButton = firstVisible("#hunt-start");
     if (!startButton) return { ok: false, error: "Botão para confirmar a caçada não encontrado" };
     startButton.click();
     const started = await waitForHuntStarted();
-    return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey } : { ok: false, error: "A tela de caçada não confirmou o início" };
+    return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey, loot } : { ok: false, error: "A tela de caçada não confirmou o início" };
   }
 
   async function leaveHunt() {
