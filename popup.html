@@ -1,5 +1,39 @@
 <!doctype html>
 <html lang="pt-BR">
-  <head><meta charset="utf-8"><style>body{width:230px;margin:0;padding:16px;font:13px system-ui;background:#121824;color:#f5f7fb}h1{font-size:16px;margin:0 0 8px}p{color:#a7b0c2;line-height:1.4}</style></head>
-  <body><h1>GamePilot</h1><p>Agente local carregado. Abra uma aba em huntera.com.br para iniciar o heartbeat.</p></body>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GamePilot</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, -apple-system, sans-serif; }
+      body { width: 280px; margin: 0; padding: 16px; background: #121824; color: #f5f7fb; }
+      h1 { margin: 0 0 4px; font-size: 17px; }
+      p { margin: 0; color: #a7b0c2; font-size: 12px; line-height: 1.45; }
+      .stack { display: grid; gap: 10px; margin-top: 14px; }
+      label { display: grid; gap: 6px; color: #cbd5e1; font-size: 12px; font-weight: 700; }
+      input, button { width: 100%; box-sizing: border-box; border-radius: 8px; font: inherit; }
+      input { border: 1px solid #38465e; padding: 9px 10px; background: #0f1723; color: #f5f7fb; text-transform: uppercase; letter-spacing: .14em; }
+      button { border: 0; padding: 10px; background: #38bdf8; color: #06121b; cursor: pointer; font-weight: 800; }
+      button.secondary { border: 1px solid #38465e; background: #26344c; color: #dbeafe; }
+      #status { display: flex; align-items: center; gap: 7px; color: #a7b0c2; }
+      #status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 10px #ef4444; }
+      #status.connected::before { background: #34d399; box-shadow: 0 0 10px #34d399; }
+      #result { min-height: 18px; color: #7dd3fc; }
+      #result.error { color: #fca5a5; }
+    </style>
+  </head>
+  <body>
+    <h1>GamePilot</h1>
+    <p>Vincule esta instalação à sua conta para separar cada navegador e aba.</p>
+    <div class="stack">
+      <div id="status">Verificando vínculo…</div>
+      <form id="pair-form">
+        <label>Código gerado no painel<input id="pair-code" maxlength="8" minlength="8" autocomplete="one-time-code" placeholder="AB12CD34" required></label>
+        <button type="submit">Vincular extensão</button>
+      </form>
+      <button id="refresh-status" type="button" class="secondary">Atualizar status</button>
+      <p id="result" aria-live="polite"></p>
+    </div>
+    <script src="popup.js"></script>
+  </body>
 </html>

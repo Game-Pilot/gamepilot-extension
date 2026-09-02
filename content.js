@@ -7,6 +7,7 @@ let automationPayload = {};
 let automationBusy = false;
 let backpackThresholdArmed = true;
 let recoveryNoticeSent = false;
+const connectionKey = globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 function showBanner(text) {
   if (!banner) {
@@ -18,7 +19,7 @@ function showBanner(text) {
 }
 
 function sendEvent(event) {
-  return new Promise((resolve) => chrome.runtime.sendMessage({ type: "agent-event", event }, (response) => resolve(response)));
+  return new Promise((resolve) => chrome.runtime.sendMessage({ type: "agent-event", connectionKey, event }, (response) => resolve(response)));
 }
 
 async function reportCommand(command, commandId, status = "completed", errorMessage = null) {
@@ -131,7 +132,7 @@ function sendState() {
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
   void runAutomationCycle(gameState);
-  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", gameState } }, (response) => {
+  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState } }, (response) => {
     if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
     void handleCommand(response.command, response.commandId, response.payload);
