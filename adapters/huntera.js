@@ -60,8 +60,16 @@
     const element = firstVisible(".hud-capacity"); if (!element) return null;
     const fill = element.querySelector(".fill"); const strong = element.querySelector("strong"); const title = strong?.getAttribute("title") || "";
     const capacity = title.match(/Carregando\s+([\d.]+)\s+de\s+([\d.]+)\s+oz/i);
-    const percent = fill ? Number.parseFloat(fill.style.width) : null;
-    return { percent: Number.isFinite(percent) ? Math.round(percent * 10) / 10 : null, currentOz: capacity ? number(capacity[1]) : number(strong?.textContent), maxOz: capacity ? number(capacity[2]) : null };
+    const currentOz = capacity ? number(capacity[1]) : null;
+    const maxOz = capacity ? number(capacity[2]) : null;
+    const reportedPercent = fill ? Number.parseFloat(fill.style.width) : null;
+    const calculatedPercent = Number.isFinite(currentOz) && Number.isFinite(maxOz) && maxOz > 0 ? (currentOz / maxOz) * 100 : null;
+    const percent = calculatedPercent ?? reportedPercent;
+    return {
+      percent: Number.isFinite(percent) ? Math.round(percent * 10) / 10 : null,
+      currentOz: currentOz ?? number(strong?.textContent),
+      maxOz
+    };
   }
 
   function readState() {

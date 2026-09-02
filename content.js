@@ -131,7 +131,7 @@ function sendState() {
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
   void runAutomationCycle(gameState);
-  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, mode, gameKey: "huntera", gameState } }, (response) => {
+  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", gameState } }, (response) => {
     if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
     void handleCommand(response.command, response.commandId, response.payload);
