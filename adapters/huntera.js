@@ -144,6 +144,28 @@
     return { ok: true, configured: controls.length, changed };
   }
 
+  function tierName(element) {
+    return normalizeItemName(element?.dataset.pullTier || element?.textContent || "");
+  }
+
+  function tierSelected(element) {
+    return element?.classList.contains("selected") || element?.classList.contains("active") || element?.getAttribute("aria-pressed") === "true" || element?.getAttribute("data-selected") === "true";
+  }
+
+  async function selectPullTier(value) {
+    const requested = normalizeItemName(value || "Cauteloso");
+    const tiers = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible);
+    const tier = tiers.find((item) => tierName(item) === requested);
+    if (!tier) return { ok: false, error: `Pull ${value || "Cauteloso"} não está disponível para esta caçada` };
+    if (!tierSelected(tier)) {
+      tier.click();
+      const applied = await waitUntil(() => tierSelected(tier) && tierName([...document.querySelectorAll(".hunt-window .hunt-tier")].find(tierSelected)) === requested, 1800, 80);
+      if (!applied) return { ok: false, error: `O Huntera não confirmou o pull ${value || "Cauteloso"}` };
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    return { ok: true, tier: value || "Cauteloso" };
+  }
+
   function setSearchValue(input, value) {
     if (!input) return;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
@@ -262,16 +284,15 @@
     if (!entry) return { ok: false, error: `Caçada ${target} não encontrada no Huntera` };
     entry.click();
     await new Promise((resolve) => window.setTimeout(resolve, 120));
-    const tierName = String(hunt.pullTier || "Cauteloso").trim().toLowerCase();
-    const tier = [...document.querySelectorAll(".hunt-window .hunt-tier")].find((item) => item.textContent.trim().toLowerCase() === tierName);
-    if (tier) tier.click();
+    const pull = await selectPullTier(hunt.pullTier);
+    if (!pull.ok) return pull;
     const loot = await configureLoot(hunt);
     if (!loot.ok) return loot;
     const startButton = firstVisible("#hunt-start");
     if (!startButton) return { ok: false, error: "Botão para confirmar a caçada não encontrado" };
     startButton.click();
     const started = await waitForHuntStarted();
-    return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey, loot } : { ok: false, error: "A tela de caçada não confirmou o início" };
+    return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey, pull, loot } : { ok: false, error: "A tela de caçada não confirmou o início" };
   }
 
   async function leaveHunt() {
