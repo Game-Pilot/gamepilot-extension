@@ -6,6 +6,7 @@ let automationActions = [];
 let automationPayload = {};
 let automationBusy = false;
 let backpackThresholdArmed = true;
+let recoveryNoticeSent = false;
 
 function showBanner(text) {
   if (!banner) {
@@ -34,12 +35,16 @@ async function handleCommand(command, commandId, payload = {}) {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       automationConfig = payload.hunt || {}; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
       backpackThresholdArmed = true;
-      const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
+      const currentState = adapter?.readState?.();
+      const selected = currentState?.characterSelection
+        ? await adapter?.selectCharacter?.(payload.characterName || payload.character_name || payload.character?.name) || { ok: false, error: "Não foi possível selecionar o personagem para reconectar" }
+        : { ok: true };
+      const configured = selected.ok ? await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 } : selected;
       if (configured.ok) { automationEnabled = true; automationActions = nextActions; automationPayload = payload; }
       else automationEnabled = false;
       result = configured.ok ? await adapter?.startHunt?.(payload) || result : configured;
       if (configured.ok && configured.configured) await sendEvent({ type: "actions.configured", message: `${configured.configured} ação(ões) configurada(s) no personagem`, details: { configured: configured.configured, actions: automationActions } });
-      if (result.ok) { mode = "hunting"; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : "Caçada iniciada", details: { payload } }); }
+      if (result.ok) { mode = "hunting"; recoveryNoticeSent = false; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : payload.resume ? "Caçada retomada após reconexão" : "Caçada iniciada", details: { payload, reconnected: Boolean(payload.resume) } }); }
     } else if (command === "configure-actions") {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       showBanner("atualizando ações do personagem");
@@ -114,6 +119,17 @@ async function runAutomationCycle(gameState) {
 function sendState() {
   const adapter = globalThis.GamePilotAdapters?.huntera;
   const gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname };
+  if (gameState.characterSelection && automationEnabled) {
+    if (!recoveryNoticeSent) {
+      recoveryNoticeSent = true;
+      mode = "reconnecting";
+      showBanner("conexão perdida; selecionando personagem");
+      void sendEvent({ type: "connection.lost", message: "Huntera voltou para a tela de personagens", details: { character: automationPayload.characterName || automationPayload.character?.name || null } });
+    }
+  } else if (gameState.detected && recoveryNoticeSent) {
+    recoveryNoticeSent = false;
+    void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
+  }
   void runAutomationCycle(gameState);
   chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, mode, gameKey: "huntera", gameState } }, (response) => {
     if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");

@@ -77,9 +77,10 @@
     const coins = analyzerNumber(coinsElement?.textContent);
     const experience = expMatch ? { current: number(expMatch[1]), max: number(expMatch[2]) } : null;
     if (experience?.current !== null && experience?.max) experience.percent = Math.round((experience.current / experience.max) * 1000) / 10;
+    const characterSelection = characterSelectionVisible();
     return {
       gameKey: "huntera", detected: Boolean(name), loggedIn: Boolean(name), page: location.pathname,
-      inHunt: visible(document.querySelector("#nav-leave-hunt")), shopOpen: visible(document.querySelector(".trade-window")),
+      inHunt: visible(document.querySelector("#nav-leave-hunt")), shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
       premium: premiumOffer ? false : (document.querySelector(".analyzer-body") ? true : null),
       character: name ? { name, externalRef: name, vocation, level: levelMatch ? Number(levelMatch[1]) : null, premium: premiumOffer ? false : null } : null,
       resources: { health: bar(".hud-hp"), mana: bar(".hud-mp") },
@@ -123,6 +124,52 @@
 
   function itemKeyFromName(value) {
     return normalizeItemName(value).replace(/[\u0027\u2019]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  function characterSelectionVisible() {
+    const explicit = [
+      "#character-selection", "#character-list", ".character-selection", ".character-select",
+      ".characters-screen", "[data-screen=\"character-selection\"]", "[data-screen=\"characters\"]",
+      "[data-page=\"characters\"]"
+    ];
+    if (explicit.some((selector) => [...document.querySelectorAll(selector)].some(visible))) return true;
+    const text = document.body?.innerText?.replace(/\s+/g, " ") || "";
+    return /(?:escolha|selecion(?:e|ar)|select|choose|pick)\s+(?:(?:um|a|seu|sua|your)\s+)?(?:personagem|character)/i.test(text)
+      || /(?:personagens|characters)\s+(?:dispon[ií]veis|available)/i.test(text);
+  }
+
+  function characterCandidate(characterName) {
+    const target = normalizeItemName(characterName);
+    if (!target) return null;
+    const selectors = "button, a, [role=\"button\"], [data-character-id], [data-character-name], [class*=\"character\"], li";
+    const candidates = [...document.querySelectorAll(selectors)].filter(visible).map((element) => {
+      const labels = [
+        element.dataset.characterName, element.dataset.name, element.getAttribute("aria-label"), element.textContent
+      ].filter(Boolean).map(normalizeItemName);
+      const exactAttribute = [element.dataset.characterName, element.dataset.name].filter(Boolean).some((label) => normalizeItemName(label) === target);
+      const exactText = labels.some((label) => label === target);
+      const escaped = target.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+      const contains = labels.some((label) => new RegExp("(^|\\s)" + escaped + "(\\s|$)", "i").test(label));
+      if (!exactAttribute && !exactText && !contains) return null;
+      const clickTarget = element.matches("button, a, [role=\"button\"]") ? element : element.querySelector("button, a, [role=\"button\"]") || element;
+      return { element: clickTarget, score: exactAttribute ? 0 : exactText ? 1 : 2, length: element.textContent?.trim().length || 0 };
+    }).filter(Boolean).sort((left, right) => left.score - right.score || left.length - right.length);
+    return candidates[0]?.element || null;
+  }
+
+  async function selectCharacter(characterName) {
+    if (!characterSelectionVisible()) return { ok: true, alreadySelected: true };
+    const target = normalizeItemName(characterName);
+    if (!target) return { ok: false, error: "Personagem da reconexão não identificado" };
+    const candidate = characterCandidate(characterName);
+    if (!candidate) return { ok: false, error: "Personagem " + characterName + " não encontrado na tela de seleção" };
+    candidate.click();
+    const loaded = await waitUntil(() => {
+      const state = readState();
+      return state.detected && normalizeItemName(state.character?.name) === target && !characterSelectionVisible()
+        && Boolean(firstVisible("#nav-start-hunt") || firstVisible(".hud-slot"));
+    }, 15000, 120);
+    return loaded ? { ok: true, character: characterName } : { ok: false, error: "O Huntera não carregou o personagem " + characterName };
   }
 
   async function configureLoot(hunt = {}) {
@@ -243,6 +290,7 @@
   }
 
   async function configureActions(rules = []) {
+    await waitUntil(() => document.querySelectorAll("button.hud-slot.assigned").some(visible), 5000, 100);
     const configured = [];
     for (const rule of Array.isArray(rules) ? rules.filter((item) => item?.enabled !== false || item?.actionKey || item?.action_key) : []) {
       const result = await configureActionRule(rule);
@@ -289,8 +337,12 @@
   }
 
   async function startHunt(payload = {}) {
-    if (readState().inHunt) return { ok: true, alreadyStarted: true };
     const hunt = payload.hunt || {};
+    if (characterSelectionVisible()) {
+      const selected = await selectCharacter(payload.characterName || payload.character_name || payload.character?.name);
+      if (!selected.ok) return selected;
+    }
+    if (readState().inHunt) return { ok: true, alreadyStarted: true };
     const target = hunt.spotKey || hunt.monsterKey;
     if (!target || target === "default") return { ok: false, error: "Nenhuma caçada foi selecionada" };
     const opened = await openHuntWindow();
@@ -473,5 +525,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, configureActions, leaveHunt, openStore, sellItems, closeStore };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter };
 })();
