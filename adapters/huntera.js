@@ -148,6 +148,18 @@
     return normalizeItemName(element?.dataset.pullTier || element?.textContent || "");
   }
 
+  const PULL_TIER_ALIASES = {
+    cauteloso: ["cauteloso", "cautious"],
+    ousado: ["ousado", "bold"],
+    agressivo: ["agressivo", "aggressive", "reckless"],
+    suicida: ["suicida", "suicidal", "suicide"]
+  };
+
+  function tierMatches(element, requested) {
+    const aliases = PULL_TIER_ALIASES[requested] || [requested];
+    return aliases.includes(tierName(element));
+  }
+
   function tierSelected(element) {
     return element?.classList.contains("selected") || element?.classList.contains("active") || element?.getAttribute("aria-pressed") === "true" || element?.getAttribute("data-selected") === "true";
   }
@@ -155,13 +167,13 @@
   async function selectPullTier(value) {
     const requested = normalizeItemName(value || "Cauteloso");
     const tiers = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible);
-    const tier = tiers.find((item) => tierName(item) === requested);
+    const tier = tiers.find((item) => tierMatches(item, requested));
     if (!tier) return { ok: false, error: `Pull ${value || "Cauteloso"} não está disponível para esta caçada` };
     if (!tierSelected(tier)) {
       tier.click();
       const applied = await waitUntil(() => {
         const selected = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible).find(tierSelected);
-        return Boolean(selected && tierName(selected) === requested);
+        return Boolean(selected && tierMatches(selected, requested));
       }, 1800, 80);
       if (!applied) return { ok: false, error: `O Huntera não confirmou o pull ${value || "Cauteloso"}` };
     }
