@@ -1,4 +1,7 @@
-const API = "http://127.0.0.1:4317";
+// The unpacked production build talks to the Railway API. Local development
+// can temporarily point this URL to http://127.0.0.1:4317.
+const API = "https://gamepilot-api-production.up.railway.app";
+// Fallback only for local development. Production uses the paired device token.
 const TOKEN = "dev-agent-token";
 const DEVICE_TOKEN_KEY = "gamepilot.deviceToken";
 const INSTALLATION_ID_KEY = "gamepilot.installationId";

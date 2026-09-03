@@ -15,3 +15,9 @@ Se o botão não existir ou a tela não confirmar a ação, a extensão reporta 
 5. Abra ou recarregue uma aba em `https://huntera.com.br`.
 
 Use somente um perfil de teste do Chrome. O token e as permissões são provisórios para desenvolvimento local.
+
+## Usar com a API publicada
+
+Esta versão aponta para `https://gamepilot-api-production.up.railway.app`. Depois de atualizar os arquivos da extensão, abra `chrome://extensions`, clique em **Reload** e faça o vínculo novamente se o dispositivo anterior estiver revogado.
+
+Para desenvolvimento local, altere a constante `API` no `service-worker.js` para `http://127.0.0.1:4317` e mantenha a permissão local no `manifest.json`.

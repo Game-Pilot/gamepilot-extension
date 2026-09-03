@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "GamePilot Local Agent",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Agente local do MVP GamePilot para operar e monitorar uma aba do Huntera.",
   "permissions": ["storage"],
   "incognito": "split",
   "host_permissions": [
     "https://huntera.com.br/*",
+    "https://gamepilot-api-production.up.railway.app/*",
     "http://127.0.0.1:4317/*"
   ],
   "background": {
