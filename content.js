@@ -82,6 +82,10 @@ async function handleCommand(command, commandId, payload = {}) {
         }
       });
       if (eventResponse?.ok === false) throw new Error(eventResponse.error || "A API recusou a sincronização do Bestiary");
+      if (synced.closeAfterSync) {
+        const closed = await adapter?.closeBestiary?.();
+        if (closed?.ok === false) throw new Error(closed.error || "Não foi possível fechar o Bestiary após sincronizar");
+      }
       result = synced;
       mode = previousMode;
     } else if (command === "bestiary-next") {
