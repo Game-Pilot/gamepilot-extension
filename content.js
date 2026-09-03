@@ -27,6 +27,11 @@ async function reportCommand(command, commandId, status = "completed", errorMess
   await sendEvent({ type: "command.executed", message: `Comando ${command} recebido pela extensão`, details: { command, commandId, status, errorMessage } });
 }
 
+function appliedActionRules(rules, configured) {
+  const appliedKeys = new Set((configured?.actions || []).map((item) => item.actionKey));
+  return (Array.isArray(rules) ? rules : []).filter((rule) => appliedKeys.has(rule.actionKey || rule.action_key));
+}
+
 async function handleCommand(command, commandId, payload = {}) {
   if (!command) return;
   const adapter = globalThis.GamePilotAdapters?.huntera;
@@ -41,18 +46,18 @@ async function handleCommand(command, commandId, payload = {}) {
         ? await adapter?.selectCharacter?.(payload.characterName || payload.character_name || payload.character?.name) || { ok: false, error: "Não foi possível selecionar o personagem para reconectar" }
         : { ok: true };
       const configured = selected.ok ? await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 } : selected;
-      if (configured.ok) { automationEnabled = true; automationActions = nextActions; automationPayload = payload; }
+      if (configured.ok) { automationEnabled = true; automationActions = appliedActionRules(nextActions, configured); automationPayload = payload; }
       else automationEnabled = false;
       result = configured.ok ? await adapter?.startHunt?.(payload) || result : configured;
-      if (configured.ok && configured.configured) await sendEvent({ type: "actions.configured", message: `${configured.configured} ação(ões) configurada(s) no personagem`, details: { configured: configured.configured, actions: automationActions } });
+      if (configured.ok && (configured.configured || configured.skipped?.length)) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) configurada(s)${configured.skipped?.length ? `; ${configured.skipped.length} indisponível(is) ignorada(s)` : ""}`, details: { configured: configured.configured || 0, skipped: configured.skipped || [], actions: automationActions } });
       if (result.ok) { mode = "hunting"; recoveryNoticeSent = false; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : payload.resume ? "Caçada retomada após reconexão" : "Caçada iniciada", details: { payload, reconnected: Boolean(payload.resume) } }); }
     } else if (command === "configure-actions") {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       showBanner("atualizando ações do personagem");
       const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
-      if (configured.ok) { automationActions = nextActions; automationPayload = { ...automationPayload, ...payload, actions: nextActions }; }
+      if (configured.ok) { automationActions = appliedActionRules(nextActions, configured); automationPayload = { ...automationPayload, ...payload, actions: automationActions }; }
       result = configured;
-      if (configured.ok) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) atualizada(s) no personagem`, details: { configured: configured.configured || 0, actions: nextActions, live: true } });
+      if (configured.ok) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) atualizada(s)${configured.skipped?.length ? `; ${configured.skipped.length} indisponível(is) ignorada(s)` : ""}`, details: { configured: configured.configured || 0, skipped: configured.skipped || [], actions: automationActions, live: true } });
     } else if (command === "stop" || command === "return-town") {
       automationEnabled = false; automationActions = []; automationPayload = {}; backpackThresholdArmed = true; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
@@ -62,6 +67,41 @@ async function handleCommand(command, commandId, payload = {}) {
     } else if (command === "sell-items") {
       mode = "selling"; showBanner("consultando o leilão e preparando a venda"); result = await adapter?.sellItems?.(payload.hunt || automationConfig) || result;
       if (result.ok) await sendEvent({ type: "items.sold", message: result.message || `Venda concluída: ${result.sold || 0} ação(ões)`, details: { ...result, payload } });
+    } else if (command === "bestiary-next") {
+      const previousHunt = automationConfig;
+      const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
+      automationEnabled = false;
+      automationBusy = true;
+      try {
+        mode = "returning"; showBanner("bestiário concluído; retornando para avançar");
+        const returned = await adapter?.leaveHunt?.() || { ok: false, error: "Adaptador Huntera não carregou" };
+        if (!returned.ok) throw new Error(returned.error || "Não foi possível sair da caçada concluída");
+        await sendEvent({ type: "hunt.returned", message: "Retornou para avançar no bestiário", details: { automatic: true, bestiary: payload.bestiary || null } });
+        mode = "selling";
+        const opened = await adapter?.openStore?.({ autoLeave: false });
+        if (!opened?.ok) throw new Error(opened?.error || "Não foi possível abrir a loja para o bestiário");
+        await sendEvent({ type: "shop.opened", message: "Loja aberta para o avanço do bestiário", details: { automatic: true } });
+        const sold = await adapter?.sellItems?.(previousHunt) || { ok: false, error: "Não foi possível vender o loot" };
+        if (!sold.ok) throw new Error(sold.error || "Não foi possível vender o loot");
+        await sendEvent({ type: "items.sold", message: sold.message || `Loot vendido antes do próximo monstro`, details: { ...sold, automatic: true } });
+        await adapter?.closeStore?.();
+        automationConfig = payload.hunt || {};
+        automationActions = nextActions;
+        automationPayload = payload;
+        backpackThresholdArmed = true;
+        mode = "starting";
+        const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
+        if (!configured.ok) throw new Error(configured.error || "Não foi possível reaplicar as ações do personagem");
+        automationActions = appliedActionRules(nextActions, configured);
+        const started = await adapter?.startHunt?.(payload);
+        if (!started?.ok) throw new Error(started?.error || "Não foi possível iniciar o próximo monstro");
+        automationEnabled = true;
+        mode = "hunting";
+        await sendEvent({ type: "hunt.started", message: `Próximo monstro do bestiário iniciado`, details: { automatic: true, bestiary: payload.bestiary || null } });
+        result = { ok: true, started, bestiary: payload.bestiary || null };
+      } finally {
+        automationBusy = false;
+      }
     } else if (command === "read-state") {
       result = { ok: true };
     } else {
@@ -132,7 +172,8 @@ function sendState() {
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
   void runAutomationCycle(gameState);
-  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState } }, (response) => {
+  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null } };
+  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState: reportedGameState } }, (response) => {
     if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
     void handleCommand(response.command, response.commandId, response.payload);

@@ -485,12 +485,22 @@
   async function configureActions(rules = []) {
     await waitUntil(() => document.querySelectorAll("button.hud-slot.assigned").some(visible), 5000, 100);
     const configured = [];
+    const skipped = [];
     for (const rule of Array.isArray(rules) ? rules.filter((item) => item?.enabled !== false || item?.actionKey || item?.action_key) : []) {
       const result = await configureActionRule(rule);
-      if (!result.ok) return { ok: false, configured: configured.length, error: result.error };
+      if (!result.ok) {
+        // A character can legitimately lack a recommended potion/skill, for
+        // example at a low level or before the player assigns it to the HUD.
+        // That action must not block the whole hunt from starting.
+        if (/não está atribuída à barra/i.test(result.error || "")) {
+          skipped.push({ actionKey: rule.actionKey || rule.action_key || null, reason: result.error });
+          continue;
+        }
+        return { ok: false, configured: configured.length, skipped, error: result.error };
+      }
       configured.push(result);
     }
-    return { ok: true, configured: configured.length, actions: configured };
+    return { ok: true, configured: configured.length, skipped, actions: configured };
   }
 
   async function openHuntWindow() {
