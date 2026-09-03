@@ -5,9 +5,28 @@ let automationConfig = {};
 let automationActions = [];
 let automationPayload = {};
 let automationBusy = false;
+let commandBusy = false;
 let backpackThresholdArmed = true;
 let recoveryNoticeSent = false;
-const connectionKey = globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+// A stable per-tab connection key. Reloads in the same tab must reuse the same
+// key so the API updates a single agent_connections row instead of leaving a
+// new "connected" ghost behind on every reload. sessionStorage is scoped to the
+// tab and survives reloads but not a fresh tab, which is exactly the lifetime we
+// want. A closed tab's row is reaped server-side by its stale last_seen_at.
+function stableConnectionKey() {
+  const fresh = () => globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    const existing = sessionStorage.getItem("gamepilot.connectionKey");
+    if (existing) return existing;
+    const created = fresh();
+    sessionStorage.setItem("gamepilot.connectionKey", created);
+    return created;
+  } catch {
+    return fresh();
+  }
+}
+const connectionKey = stableConnectionKey();
 
 function showBanner(text) {
   if (!banner) {
@@ -146,7 +165,7 @@ function thresholdReached(gameState) {
 }
 
 async function runAutomationCycle(gameState) {
-  if (!automationEnabled || automationBusy || !gameState?.inHunt || !thresholdReached(gameState)) return;
+  if (!automationEnabled || automationBusy || commandBusy || !gameState?.inHunt || !thresholdReached(gameState)) return;
   automationBusy = true;
   backpackThresholdArmed = false;
   const adapter = globalThis.GamePilotAdapters?.huntera;
@@ -194,13 +213,29 @@ function sendState() {
   }
   void runAutomationCycle(gameState);
   const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null } };
-  chrome.runtime.sendMessage({ type: "page-state", state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState: reportedGameState } }, (response) => {
+  // Only ask the API to dispatch a command when nothing is running. A command
+  // is marked "dispatched" server-side the moment it is handed out, so pulling
+  // one while busy would either run two commands concurrently or strand the
+  // command (dispatched but never executed). State keeps flowing for liveness.
+  const wantsCommand = !commandBusy && !automationBusy;
+  chrome.runtime.sendMessage({ type: "page-state", wantsCommand, state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState: reportedGameState } }, (response) => {
     if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
-    void handleCommand(response.command, response.commandId, response.payload);
-    if (!response.command) showBanner(`conectado · ${mode}`);
+    if (response.command) {
+      commandBusy = true;
+      handleCommand(response.command, response.commandId, response.payload).finally(() => { commandBusy = false; });
+    } else {
+      showBanner(`conectado · ${mode}`);
+    }
   });
 }
+
+// Best-effort notice so the API can retire this connection immediately when the
+// tab closes, instead of waiting for its last_seen_at to go stale. The server
+// staleness sweep is the real guarantee; this just makes the common case fast.
+window.addEventListener("pagehide", () => {
+  try { chrome.runtime.sendMessage({ type: "agent-disconnect", connectionKey }); } catch { /* worker may be gone */ }
+});
 
 showBanner("extensão carregada");
 sendState();

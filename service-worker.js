@@ -90,11 +90,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "agent-disconnect") {
+    (async () => {
+      await api("/api/v1/agent/disconnect", { method: "POST", body: JSON.stringify({ connectionKey: message.connectionKey || null }) });
+      sendResponse({ ok: true });
+    })().catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message.type !== "page-state") return;
 
   (async () => {
     const state = { ...message.state, tabId: sender.tab?.id };
     await api("/api/v1/agent/state", { method: "POST", body: JSON.stringify(state) });
+    // The content script asks for a command only when it is idle; while a
+    // command runs it keeps posting state but sets wantsCommand=false so the
+    // API does not dispatch (and strand) a second command.
+    if (message.wantsCommand === false) {
+      sendResponse({ ok: true, command: null, commandId: null, payload: {} });
+      return;
+    }
     const query = state.connectionKey ? `?connectionKey=${encodeURIComponent(state.connectionKey)}` : "";
     const command = await api(`/api/v1/agent/commands${query}`);
     sendResponse({
