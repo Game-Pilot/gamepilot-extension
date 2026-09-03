@@ -389,8 +389,44 @@
     return bestiaryEntryButtons().map((entry) => `${normalizeItemName(entry.name)}:${entry.currentKills}/${entry.targetKills}`).join("|");
   }
 
-  function bestiaryCurrentPage() {
+  function bestiaryControlLabels(button) {
+    return [
+      button?.textContent,
+      button?.getAttribute("aria-label"),
+      button?.getAttribute("title"),
+      button?.dataset?.tooltip
+    ].filter(Boolean).map((value) => normalizeItemName(String(value).replace(/\s+/g, " ")));
+  }
+
+  function bestiaryPageNumber(button) {
+    for (const label of bestiaryControlLabels(button)) {
+      if (/^\d{1,2}$/.test(label)) return Number(label);
+      const match = label.match(/(?:page|pagina)\s*(\d+)$/i);
+      if (match) return Number(match[1]);
+    }
+    return null;
+  }
+
+  function bestiaryPaginationControls() {
     const controls = [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible);
+    const paginationLabel = (button) => bestiaryControlLabels(button).some((label) =>
+      /^(?:first page|previous page|next page|last page|primeira pagina|pagina anterior|proxima pagina|ultima pagina|pagina seguinte)$/.test(label)
+    );
+    const anchor = controls.find(paginationLabel);
+    if (!anchor) return [];
+
+    let parent = anchor.parentElement;
+    for (let level = 0; parent && level < 8; level += 1, parent = parent.parentElement) {
+      const nested = [...parent.querySelectorAll("button, [role=\"button\"]")].filter(visible);
+      const numeric = nested.filter((button) => bestiaryPageNumber(button) !== null);
+      const hasPaginationLabel = nested.some(paginationLabel);
+      if (hasPaginationLabel && numeric.length >= 2) return nested;
+    }
+    return controls.filter((button) => paginationLabel(button) || bestiaryPageNumber(button) !== null);
+  }
+
+  function bestiaryCurrentPage() {
+    const controls = bestiaryPaginationControls();
     const current = controls.find((button) => {
       const ariaCurrent = button.getAttribute("aria-current");
       return ariaCurrent === "page";
@@ -403,6 +439,10 @@
     return match ? Number(match[1]) : null;
   }
 
+  function bestiaryPageButton(pageNumber) {
+    return bestiaryPaginationControls().find((button) => bestiaryPageNumber(button) === pageNumber) || null;
+  }
+
   function bestiaryButton(label) {
     const target = normalizeItemName(label);
     return [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible).find((button) => {
@@ -413,10 +453,9 @@
   }
 
   function bestiaryNextButton() {
-    const controls = [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible);
+    const controls = bestiaryPaginationControls();
     const explicit = controls.find((button) => {
-      const labels = [button.getAttribute("aria-label"), button.getAttribute("title"), button.dataset.tooltip]
-        .filter(Boolean).map(normalizeItemName);
+      const labels = bestiaryControlLabels(button);
       const dataAction = normalizeItemName(button.dataset.pageAction || button.dataset.paginationAction || "");
       return labels.some((label) => ["proxima pagina", "next page", "pagina seguinte"].includes(label))
         || dataAction === "next" || button.classList.contains("next-page");
@@ -426,6 +465,32 @@
       const text = normalizeItemName(button.textContent?.replace(/\s+/g, " "));
       return text === "›" || text === ">";
     }) || null;
+  }
+
+  function bestiaryFirstPageButton() {
+    return bestiaryPaginationControls().find((button) => bestiaryControlLabels(button).some((label) =>
+      ["primeira pagina", "first page"].includes(label)
+    )) || null;
+  }
+
+  function bestiaryButtonDisabled(button) {
+    return !button || button.disabled || button.getAttribute("aria-disabled") === "true" || button.classList.contains("disabled");
+  }
+
+  async function bestiaryGoToPage(pageNumber, { allowUnchanged = false } = {}) {
+    const pageButton = bestiaryPageButton(pageNumber);
+    if (!pageButton) return false;
+    const beforePage = bestiaryCurrentPage();
+    const beforeSignature = bestiaryPageSignature();
+    pageButton.click();
+    const changed = await waitUntil(() => {
+      const nextPage = bestiaryCurrentPage();
+      const nextSignature = bestiaryPageSignature();
+      return (nextPage !== null && nextPage === pageNumber)
+        || (nextSignature && nextSignature !== beforeSignature);
+    }, 6000, 100);
+    if (changed) return true;
+    return allowUnchanged && (beforePage === pageNumber || bestiaryPageSignature() === beforeSignature);
   }
 
   function bestiaryCloseButton() {
@@ -466,6 +531,35 @@
     if (!opened.ok) return opened;
     const entries = new Map();
     let pages = 0;
+    const numberedPages = [...new Set(
+      bestiaryPaginationControls().map((button) => bestiaryPageNumber(button)).filter((page) => page !== null)
+    )].sort((left, right) => left - right);
+    if (numberedPages.length >= 2 && bestiaryPageButton(numberedPages[0])) {
+      const collectCurrentPage = () => {
+        for (const entry of bestiaryEntryButtons()) {
+          entries.set(normalizeItemName(entry.name), { name: entry.name, currentKills: entry.currentKills, targetKills: entry.targetKills });
+        }
+        pages += 1;
+      };
+      const firstPage = numberedPages[0];
+      const firstMoved = await bestiaryGoToPage(firstPage, { allowUnchanged: true });
+      if (!firstMoved) return { ok: false, error: "O Bestiary não voltou para a primeira página" };
+      collectCurrentPage();
+      for (const pageNumber of numberedPages.slice(1)) {
+        const moved = await bestiaryGoToPage(pageNumber);
+        if (!moved) return { ok: false, error: "O Bestiary não avançou para a página " + pageNumber };
+        collectCurrentPage();
+      }
+      if (!entries.size) return { ok: false, error: "Nenhuma entrada do Bestiary foi encontrada" };
+      return {
+        ok: true,
+        characterName: readState().character?.name || null,
+        entries: [...entries.values()],
+        pages,
+        closeAfterSync: !wasOpen,
+        source: "huntera-bestiary-ui"
+      };
+    }
     const visitedPages = new Set();
     for (; pages < 20; pages += 1) {
       const page = bestiaryCurrentPage();
