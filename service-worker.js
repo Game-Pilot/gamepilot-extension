@@ -1,8 +1,6 @@
 // The unpacked production build talks to the Railway API. Local development
 // can temporarily point this URL to http://127.0.0.1:4317.
 const API = "https://gamepilot-api-production.up.railway.app";
-// Fallback only for local development. Production uses the paired device token.
-const TOKEN = "dev-agent-token";
 const DEVICE_TOKEN_KEY = "gamepilot.deviceToken";
 const INSTALLATION_ID_KEY = "gamepilot.installationId";
 
@@ -34,14 +32,13 @@ async function deviceToken() {
   return storageGet(DEVICE_TOKEN_KEY);
 }
 
-async function api(path, options = {}, { allowLegacy = true } = {}) {
+async function api(path, options = {}) {
   const token = await deviceToken();
   const headers = {
     "content-type": "application/json",
     ...(options.headers || {})
   };
   if (token) headers["x-gamepilot-device"] = token;
-  else if (allowLegacy) headers["x-gamepilot-agent"] = TOKEN;
   const response = await fetch(`${API}${path}`, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `API ${response.status}`);
@@ -58,7 +55,7 @@ async function pairDevice(code) {
       browser: "Chrome",
       extensionVersion: chrome.runtime.getManifest().version
     })
-  }, { allowLegacy: false });
+  });
   await storageSet({ [DEVICE_TOKEN_KEY]: data.deviceToken });
   return data;
 }
@@ -66,7 +63,7 @@ async function pairDevice(code) {
 async function pairedDeviceStatus() {
   const token = await deviceToken();
   if (!token) return { status: "unpaired", device: null, connections: [] };
-  return api("/api/v1/extension/device-status", {}, { allowLegacy: false });
+  return api("/api/v1/extension/device-status");
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

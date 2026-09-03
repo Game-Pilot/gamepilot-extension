@@ -17,6 +17,12 @@
   "content_scripts": [
     {
       "matches": ["https://huntera.com.br/*"],
+      "js": ["socket-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://huntera.com.br/*"],
       "js": ["adapters/huntera.js", "content.js"],
       "run_at": "document_idle"
     }

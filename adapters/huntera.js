@@ -56,6 +56,166 @@
     return { ...metrics, loot };
   }
 
+  const socketState = {
+    connected: false,
+    socketUrl: null,
+    lastMessageAt: null,
+    lastMessageType: null,
+    phase: null,
+    playerStats: null,
+    inventory: null,
+    analyzer: null,
+    coins: null,
+    huntPending: null,
+    huntLeavePending: null,
+    actionBar: null,
+    itemValues: null,
+    marketItems: null,
+    messages: {}
+  };
+
+  function firstNumber(...values) {
+    for (const value of values) {
+      const parsed = Number(value);
+      if (value !== null && value !== undefined && value !== "" && Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  }
+
+  function timestampMs(value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(value || "");
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function socketFresh(maxAge = 12000) {
+    const last = Date.parse(socketState.lastMessageAt || "");
+    return socketState.connected && Number.isFinite(last) && Date.now() - last <= maxAge;
+  }
+
+  function copyInventory(payload) {
+    return {
+      slots: Array.isArray(payload?.slots) ? payload.slots.slice() : [],
+      satchel: Array.isArray(payload?.satchel) ? payload.satchel.slice() : [],
+      equipment: payload?.equipment && typeof payload.equipment === "object" ? { ...payload.equipment } : {},
+      gold: firstNumber(payload?.gold)
+    };
+  }
+
+  function applyInventoryDelta(payload) {
+    if (!socketState.inventory) return;
+    const inventory = copyInventory(socketState.inventory);
+    const slotCount = firstNumber(payload?.slotCount);
+    const satchelCount = firstNumber(payload?.satchelCount);
+    if (slotCount !== null) inventory.slots = inventory.slots.slice(0, slotCount);
+    if (satchelCount !== null) inventory.satchel = inventory.satchel.slice(0, satchelCount);
+    for (const change of Array.isArray(payload?.changes) ? payload.changes : []) {
+      if (change.container === "backpack" && Number.isInteger(Number(change.index)) && Number(change.index) >= 0) inventory.slots[Number(change.index)] = change.item || null;
+      else if (change.container === "satchel" && Number.isInteger(Number(change.index)) && Number(change.index) >= 0) inventory.satchel[Number(change.index)] = change.item || null;
+      else if (change.slot) inventory.equipment[change.slot] = change.item || null;
+    }
+    inventory.gold = firstNumber(payload?.gold, inventory.gold);
+    socketState.inventory = inventory;
+  }
+
+  function applySocketMessage(message) {
+    if (!message?.type) return;
+    socketState.lastMessageAt = message.receivedAt || new Date().toISOString();
+    socketState.lastMessageType = message.type;
+    socketState.messages[message.type] = message.payload || {};
+    const payload = message.payload || {};
+    switch (message.type) {
+      case "player-stats":
+        socketState.playerStats = payload;
+        if (Number(payload.huntSessionRemainingMs) > 0 && socketState.phase !== "returning") socketState.phase = "hunting";
+        if (Number(payload.huntSessionRemainingMs) === 0 && socketState.phase !== "starting") socketState.phase = "idle";
+        break;
+      case "player-inventory": socketState.inventory = copyInventory(payload); break;
+      case "inventory-delta": applyInventoryDelta(payload); break;
+      case "hunt-analyzer-update":
+        socketState.analyzer = payload;
+        if (Number(socketState.playerStats?.huntSessionRemainingMs) > 0 && socketState.phase !== "returning") socketState.phase = "hunting";
+        break;
+      case "hunt-analyzer-session": socketState.analyzer = { ...(socketState.analyzer || {}), ...payload }; break;
+      case "coins": socketState.coins = firstNumber(payload.balance); break;
+      case "hunt-pending": socketState.huntPending = payload; socketState.phase = "starting"; break;
+      case "hunt-leave-pending": socketState.huntLeavePending = payload; socketState.phase = payload.remainingMs === null ? "idle" : "returning"; break;
+      case "instance-enter": socketState.phase = "hunting"; break;
+      case "player-died": socketState.phase = "idle"; break;
+      case "action-bar-update": socketState.actionBar = payload; break;
+      case "item-values": socketState.itemValues = payload; break;
+      case "market-items": socketState.marketItems = payload; break;
+      default: break;
+    }
+  }
+
+  function applySocketSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") return;
+    socketState.connected = Boolean(snapshot.connected);
+    socketState.socketUrl = snapshot.socketUrl || socketState.socketUrl;
+    for (const message of Object.values(snapshot.messages || {}).sort((left, right) => Date.parse(left?.receivedAt || "") - Date.parse(right?.receivedAt || ""))) applySocketMessage(message);
+  }
+
+  function socketBackpack() {
+    const inventory = socketState.inventory;
+    const capacity = firstNumber(socketState.playerStats?.capacity);
+    if (!inventory || capacity === null || capacity <= 0) return null;
+    const items = [...inventory.slots, ...inventory.satchel, ...Object.values(inventory.equipment || {})].filter(Boolean);
+    const weighted = items.filter((item) => Number.isFinite(Number(item.weight)));
+    if (weighted.length !== items.length) return null;
+    const current = weighted.reduce((total, item) => total + Number(item.weight) * Math.max(1, Number(item.count ?? item.quantity ?? 1)), 0);
+    const percent = Math.max(0, Math.min(100, (current / capacity) * 100));
+    return { percent: Math.round(percent * 10) / 10, currentOz: Math.round((current / 100) * 100) / 100, maxOz: Math.round((capacity / 100) * 100) / 100, source: "socket" };
+  }
+
+  function socketMetrics() {
+    const analyzer = socketState.analyzer;
+    if (!analyzer) return {};
+    const experience = firstNumber(analyzer.experience, analyzer.xpGained, analyzer.experienceGained);
+    const lootValue = firstNumber(analyzer.lootValue, analyzer.loot, analyzer.goldEarned);
+    const waste = firstNumber(analyzer.waste, analyzer.goldSpent);
+    const kills = firstNumber(analyzer.kills, analyzer.monsters, analyzer.monstersKilled, analyzer.creaturesKilled);
+    const startedAt = timestampMs(analyzer.startedAt);
+    const durationMs = firstNumber(analyzer.durationMs) || (startedAt ? Math.max(0, Date.now() - startedAt) : null);
+    const multiplier = durationMs > 0 ? 3600000 / durationMs : null;
+    return {
+      ...(kills === null ? {} : { kills }),
+      ...(experience === null ? {} : { xpGained: experience }),
+      ...(lootValue === null ? {} : { goldEarned: lootValue }),
+      ...(waste === null ? {} : { goldSpent: waste }),
+      ...(multiplier === null || experience === null ? {} : { xpPerHour: Math.round(experience * multiplier) }),
+      ...(multiplier === null || lootValue === null ? {} : { goldPerHour: Math.round(lootValue * multiplier) }),
+      ...(multiplier === null || lootValue === null || waste === null ? {} : { balancePerHour: Math.round((lootValue - waste) * multiplier) })
+    };
+  }
+
+  function socketStamina() {
+    const milliseconds = firstNumber(socketState.playerStats?.staminaMs);
+    if (milliseconds === null) return null;
+    const minutes = Math.max(0, Math.round(milliseconds / 60000));
+    return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}h`;
+  }
+
+  function socketInHunt() {
+    if (!socketFresh() || !socketState.playerStats) return null;
+    if (socketState.phase === "hunting" || socketState.phase === "returning") return true;
+    if (socketState.phase === "idle") return false;
+    const sessionMs = firstNumber(socketState.playerStats.huntSessionRemainingMs);
+    return sessionMs === null ? null : sessionMs > 0;
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.data?.source !== "gamepilot-huntera-socket") return;
+    if (event.data.kind === "message") applySocketMessage(event.data.message);
+    else if (event.data.kind === "connection") {
+      socketState.connected = event.data.status === "open";
+      if (socketState.connected) socketState.socketUrl = event.data.socketUrl || socketState.socketUrl;
+    }
+    else if (event.data.kind === "snapshot") applySocketSnapshot(event.data.snapshot);
+  });
+  window.postMessage({ source: "gamepilot-huntera-content", type: "socket-snapshot-request" }, "*");
+
   function readBackpack() {
     const element = firstVisible(".hud-capacity"); if (!element) return null;
     const fill = element.querySelector(".fill"); const strong = element.querySelector("strong"); const title = strong?.getAttribute("title") || "";
@@ -82,20 +242,45 @@
     const expMatch = expTitle.match(/([\d.,]+)\s*\/\s*([\d.,]+)/);
     const premiumOffer = visible(document.querySelector(".analyzer-locked-buy"));
     const coinsElement = firstVisible("#header-coins .header-coins-count, [aria-label=\"Huntera Coins\"] .header-coins-count");
-    const coins = analyzerNumber(coinsElement?.textContent);
-    const experience = expMatch ? { current: number(expMatch[1]), max: number(expMatch[2]) } : null;
+    const socketStats = socketState.playerStats;
+    const socketHealth = socketStats ? { current: firstNumber(socketStats.health), max: firstNumber(socketStats.maxHealth) } : null;
+    const socketMana = socketStats ? { current: firstNumber(socketStats.mana), max: firstNumber(socketStats.maxMana) } : null;
+    for (const resource of [socketHealth, socketMana]) {
+      if (resource?.current !== null && resource?.max) resource.percent = Math.round((resource.current / resource.max) * 1000) / 10;
+    }
+    const domExperience = expMatch ? { current: number(expMatch[1]), max: number(expMatch[2]) } : null;
+    const socketExperience = socketStats ? { current: firstNumber(socketStats.experience), max: firstNumber(socketStats.experienceNeeded) } : null;
+    const experience = socketExperience?.current !== null && socketExperience?.max ? socketExperience : domExperience;
     if (experience?.current !== null && experience?.max) experience.percent = Math.round((experience.current / experience.max) * 1000) / 10;
     const characterSelection = characterSelectionVisible();
+    const domInHunt = visible(document.querySelector("#nav-leave-hunt"));
+    const socketHunt = socketInHunt();
+    const socketInventory = socketState.inventory;
+    const socketGold = firstNumber(socketInventory?.gold);
+    const socketCoins = firstNumber(socketState.coins);
+    const socketMetricsValue = socketMetrics();
+    const backpack = socketFresh() ? (socketBackpack() || readBackpack()) : readBackpack();
     return {
       gameKey: "huntera", detected: Boolean(name), loggedIn: Boolean(name), page: location.pathname,
-      inHunt: visible(document.querySelector("#nav-leave-hunt")), shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
+      inHunt: socketHunt ?? domInHunt, shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
       premium: premiumOffer ? false : (document.querySelector(".analyzer-body") ? true : null),
       character: name ? { name, externalRef: name, vocation, level: levelMatch ? Number(levelMatch[1]) : null, premium: premiumOffer ? false : null } : null,
-      resources: { health: bar(".hud-hp"), mana: bar(".hud-mp") },
+      resources: { health: socketHealth?.current !== null && socketHealth?.max ? socketHealth : bar(".hud-hp"), mana: socketMana?.current !== null && socketMana?.max ? socketMana : bar(".hud-mp") },
       experience,
-      stamina: firstVisible(".hud-stamina-clock")?.textContent?.trim() || null,
-      gold: number(firstVisible("#header-gold")?.textContent), coins, backpack: readBackpack(), metrics: readLootMetrics(),
-      target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null }
+      stamina: socketStamina() || firstVisible(".hud-stamina-clock")?.textContent?.trim() || null,
+      staminaMs: firstNumber(socketStats?.staminaMs), staminaDraining: socketStats?.staminaDraining ?? null,
+      huntSessionRemainingMs: firstNumber(socketStats?.huntSessionRemainingMs),
+      gold: socketGold ?? number(firstVisible("#header-gold")?.textContent), coins: socketCoins ?? analyzerNumber(coinsElement?.textContent),
+      backpack, metrics: { ...readLootMetrics(), ...socketMetricsValue },
+      target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null },
+      socket: {
+        connected: socketState.connected,
+        fresh: socketFresh(),
+        url: socketState.socketUrl,
+        lastMessageAt: socketState.lastMessageAt,
+        lastMessageType: socketState.lastMessageType,
+        phase: socketState.phase
+      }
     };
   }
 
