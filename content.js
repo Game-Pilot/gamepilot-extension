@@ -67,6 +67,23 @@ async function handleCommand(command, commandId, payload = {}) {
     } else if (command === "sell-items") {
       mode = "selling"; showBanner("consultando o leilão e preparando a venda"); result = await adapter?.sellItems?.(payload.hunt || automationConfig) || result;
       if (result.ok) await sendEvent({ type: "items.sold", message: result.message || `Venda concluída: ${result.sold || 0} ação(ões)`, details: { ...result, payload } });
+    } else if (command === "sync-bestiary") {
+      const previousMode = mode;
+      mode = "syncing";
+      showBanner("lendo o progresso do Bestiary");
+      const synced = await adapter?.syncBestiary?.() || { ok: false, error: "Adaptador Huntera não carregou" };
+      if (!synced.ok) throw new Error(synced.error || "Não foi possível sincronizar o Bestiary");
+      const eventResponse = await sendEvent({
+        type: "bestiary.synced",
+        message: `${synced.entries.length} entrada(s) do Bestiary sincronizada(s)`,
+        details: {
+          command, commandId, status: "completed", characterId: payload.characterId || null,
+          entries: synced.entries, pages: synced.pages, source: synced.source, gameState: adapter.readState()
+        }
+      });
+      if (eventResponse?.ok === false) throw new Error(eventResponse.error || "A API recusou a sincronização do Bestiary");
+      result = synced;
+      mode = previousMode;
     } else if (command === "bestiary-next") {
       const previousHunt = automationConfig;
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];

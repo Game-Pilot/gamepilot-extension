@@ -365,6 +365,110 @@
     return loaded ? { ok: true, character: characterName } : { ok: false, error: "O Huntera não carregou o personagem " + characterName };
   }
 
+  function bestiaryNumber(value) {
+    const raw = String(value || "").trim().replace(/\s/g, "");
+    if (!raw) return null;
+    if (/^\d{1,3}(?:[.,]\d{3})+$/.test(raw)) return Number(raw.replace(/[.,]/g, ""));
+    const parsed = Number(raw.replace(",", "."));
+    return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : null;
+  }
+
+  function bestiaryEntryButtons() {
+    return [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible).map((button) => {
+      const text = button.textContent?.replace(/\s+/g, " ").trim() || "";
+      const match = text.match(/^(.+?)\s+([\d.,]+)\s*\/\s*([\d.,]+)$/);
+      if (!match) return null;
+      const currentKills = bestiaryNumber(match[2]);
+      const targetKills = bestiaryNumber(match[3]);
+      if (currentKills === null || targetKills === null || targetKills < 100) return null;
+      return { button, name: match[1].trim(), currentKills, targetKills };
+    }).filter(Boolean);
+  }
+
+  function bestiaryPageSignature() {
+    return bestiaryEntryButtons().map((entry) => `${normalizeItemName(entry.name)}:${entry.currentKills}/${entry.targetKills}`).join("|");
+  }
+
+  function bestiaryButton(label) {
+    const target = normalizeItemName(label);
+    return [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible).find((button) => {
+      const text = normalizeItemName(button.textContent?.replace(/\s+/g, " "));
+      const aria = normalizeItemName(button.getAttribute("aria-label"));
+      return text === target || aria === target;
+    }) || null;
+  }
+
+  function bestiaryNextButton() {
+    return [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible).find((button) => {
+      const text = normalizeItemName(button.textContent?.replace(/\s+/g, " "));
+      const aria = normalizeItemName(button.getAttribute("aria-label"));
+      return /^(proxima pagina|next page|›|>)$/.test(text) || /^(proxima pagina|next page)$/.test(aria);
+    }) || null;
+  }
+
+  function bestiaryCloseButton() {
+    return [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible).find((button) => {
+      const text = normalizeItemName(button.textContent);
+      const aria = normalizeItemName(button.getAttribute("aria-label"));
+      if (!["fechar", "close"].includes(text) && !["fechar", "close"].includes(aria)) return false;
+      let parent = button.parentElement;
+      for (let level = 0; parent && level < 8; level += 1, parent = parent.parentElement) {
+        if (/cyclopedia|bestiary/.test(normalizeItemName(parent.textContent))) return true;
+      }
+      return false;
+    }) || null;
+  }
+
+  async function openBestiary() {
+    const alreadyOpen = bestiaryEntryButtons().length > 0 || Boolean(bestiaryButton("bestiary"));
+    if (!alreadyOpen) {
+      const cyclopedia = firstVisible("#nav-cyclopedia");
+      if (!cyclopedia) return { ok: false, error: "Botão da Cyclopedia não encontrado nesta tela" };
+      cyclopedia.click();
+      const opened = await waitUntil(() => Boolean(bestiaryButton("bestiary")), 5000);
+      if (!opened) return { ok: false, error: "A Cyclopedia não abriu" };
+    }
+    if (!bestiaryEntryButtons().length) {
+      const tab = bestiaryButton("bestiary");
+      if (!tab) return { ok: false, error: "A aba Bestiary não foi encontrada" };
+      tab.click();
+      const loaded = await waitUntil(() => bestiaryEntryButtons().length > 0, 5000);
+      if (!loaded) return { ok: false, error: "O progresso do Bestiary não carregou" };
+    }
+    return { ok: true };
+  }
+
+  async function syncBestiary() {
+    const wasOpen = bestiaryEntryButtons().length > 0 || Boolean(bestiaryButton("bestiary"));
+    const opened = await openBestiary();
+    if (!opened.ok) return opened;
+    const entries = new Map();
+    let pages = 0;
+    for (; pages < 20; pages += 1) {
+      for (const entry of bestiaryEntryButtons()) {
+        entries.set(normalizeItemName(entry.name), { name: entry.name, currentKills: entry.currentKills, targetKills: entry.targetKills });
+      }
+      const next = bestiaryNextButton();
+      if (!next || next.disabled || next.getAttribute("aria-disabled") === "true" || next.classList.contains("disabled")) break;
+      const before = bestiaryPageSignature();
+      next.click();
+      const changed = await waitUntil(() => {
+        const signature = bestiaryPageSignature();
+        return signature && signature !== before;
+      }, 3000);
+      if (!changed) break;
+    }
+    if (!wasOpen) bestiaryCloseButton()?.click();
+    if (!entries.size) return { ok: false, error: "Nenhuma entrada do Bestiary foi encontrada" };
+    return {
+      ok: true,
+      characterName: readState().character?.name || null,
+      entries: [...entries.values()],
+      pages: Math.min(pages + 1, 20),
+      source: "huntera-bestiary-ui"
+    };
+  }
+
   async function configureLoot(hunt = {}) {
     await waitUntil(() => document.querySelectorAll(".hunt-window .hunt-loot-auto").length > 0, 1500);
     const controls = [...document.querySelectorAll(".hunt-window .hunt-loot-auto")].filter((control) => !control.disabled && visible(control.closest(".hunt-loot-entry")));
@@ -728,5 +832,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary };
 })();
