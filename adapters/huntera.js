@@ -802,26 +802,28 @@
     return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey, pull, loot } : { ok: false, error: "A tela de caçada não confirmou o início" };
   }
 
+  // The town is the ground truth for "left the hunt": the leave button is gone
+  // and a town action (store or start-hunt) is available. We trust the DOM here
+  // rather than readState().inHunt, whose socket phase can lag on "hunting" /
+  // "returning" for several seconds after the player is already back in town —
+  // that lag is what timed out the leave and blocked the store from opening.
+  function inTown() {
+    return !visible(document.querySelector("#nav-leave-hunt"))
+      && (visible(document.querySelector("#nav-store")) || visible(document.querySelector("#nav-start-hunt")));
+  }
+
   async function leaveHunt() {
-    if (!readState().inHunt) return { ok: true, alreadyOut: true };
+    if (inTown()) return { ok: true, alreadyOut: true };
     const button = document.querySelector("#nav-leave-hunt"); if (!button) return { ok: false, error: "Botão para sair da caçada não encontrado" };
     button.click();
-    const returned = await new Promise((resolve) => {
-      const startedAt = Date.now();
-      const check = () => {
-        if (!readState().inHunt) return resolve(true);
-        if (Date.now() - startedAt >= 15000) return resolve(false);
-        window.setTimeout(check, 100);
-      };
-      check();
-    });
+    const returned = await waitUntil(() => inTown(), 20000, 100);
     return returned ? { ok: true } : { ok: false, error: "A caçada não terminou após o comando" };
   }
 
   async function openStore({ autoLeave = true } = {}) {
     if (visible(document.querySelector(".trade-window"))) return { ok: true, alreadyOpen: true };
-    if (readState().inHunt && autoLeave) { const left = await leaveHunt(); if (!left.ok) return left; }
-    if (readState().inHunt) return { ok: false, error: "Saia da caçada antes de abrir a loja" };
+    if (!inTown() && autoLeave) { const left = await leaveHunt(); if (!left.ok) return left; }
+    if (!inTown()) return { ok: false, error: "Saia da caçada antes de abrir a loja" };
     const button = document.querySelector("#nav-store"); if (!button) return { ok: false, error: "Botão da loja não encontrado nesta tela" };
     button.click(); const shop = await waitFor(".trade-window", 5000, true);
     return shop ? { ok: true, alreadyOpen: false } : { ok: false, error: "A loja não abriu após o comando" };
