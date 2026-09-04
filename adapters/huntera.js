@@ -262,7 +262,7 @@
     const backpack = socketFresh() ? (socketBackpack() || readBackpack()) : readBackpack();
     return {
       gameKey: "huntera", detected: Boolean(name), loggedIn: Boolean(name), page: location.pathname,
-      inHunt: socketHunt ?? domInHunt, shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
+      inHunt: socketHunt === true || domInHunt, shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
       premium: premiumOffer ? false : (document.querySelector(".analyzer-body") ? true : null),
       character: name ? { name, externalRef: name, vocation, level: levelMatch ? Number(levelMatch[1]) : null, premium: premiumOffer ? false : null } : null,
       resources: { health: socketHealth?.current !== null && socketHealth?.max ? socketHealth : bar(".hud-hp"), mana: socketMana?.current !== null && socketMana?.max ? socketMana : bar(".hud-mp") },
