@@ -152,6 +152,7 @@ async function handleCommand(command, commandId, payload = {}) {
   }
   if (!result.ok) { mode = "error"; await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error } }); }
   else if (command === "stop") mode = "idle";
+  else if (mode === "error") mode = adapter?.readState?.().inHunt ? "hunting" : "idle"; // a later success clears a stale error banner
   showBanner(result.ok ? `${command} concluído` : result.error);
   await reportCommand(command, commandId, result.ok ? "completed" : "failed", result.ok ? null : result.error);
 }

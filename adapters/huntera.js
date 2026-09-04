@@ -824,8 +824,9 @@
     }
     if (!resolved.length) return { ok: true, placed: 0, plan: [], note: "Nenhuma poção usável para as regras" };
 
-    // Priority: lowest threshold first (most urgent) → leftmost slot.
-    resolved.sort((left, right) => left.threshold - right.threshold);
+    // Placement follows the panel's order (priority), left to right. The player
+    // controls it — since the bar is first-match-wins left-to-right, they put the
+    // stronger/lower-threshold potions on the left themselves. We don't reorder.
 
     const placed = [];
     for (let index = 0; index < resolved.length && index < 10; index += 1) {
