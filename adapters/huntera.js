@@ -72,6 +72,7 @@
     itemValues: null,
     marketItems: null,
     bestiary: null,
+    training: null,
     messages: {}
   };
 
@@ -165,6 +166,19 @@
         }
         break;
       }
+      case "training-update":
+        // wire-96 is independent from hunts/bestiary. Huntera keeps training
+        // active while the character remains in the training ground and sends
+        // `{ active: false }` when it stops. Never infer training merely from
+        // the presence of this cached message: only the explicit active flag is
+        // authoritative.
+        socketState.training = {
+          active: payload.active === true,
+          skill: payload.active === true && typeof payload.skill === "string" ? payload.skill : null,
+          etaMs: payload.active === true ? Math.max(0, firstNumber(payload.etaMs) ?? 0) : 0,
+          at: socketState.lastMessageAt
+        };
+        break;
       case "item-values": socketState.itemValues = payload; break;
       case "market-items": socketState.marketItems = payload; break;
       default: break;
@@ -216,6 +230,31 @@
     if (milliseconds === null) return null;
     const minutes = Math.max(0, Math.round(milliseconds / 60000));
     return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}h`;
+  }
+
+  function socketTraining() {
+    const training = socketState.training;
+    if (!socketFresh() || training?.active !== true) return { active: false };
+    const stats = socketState.playerStats;
+    const skill = training.skill;
+    const progress = skill === "magic"
+      ? firstNumber(stats?.magicProgress)
+      : firstNumber(stats?.skillProgress?.[skill]);
+    const progressNeeded = skill === "magic"
+      ? firstNumber(stats?.magicProgressNeeded)
+      : firstNumber(stats?.skillProgressNeeded?.[skill]);
+    const percent = progress !== null && progressNeeded !== null && progressNeeded > 0
+      ? Math.max(0, Math.min(100, Math.round((progress / progressNeeded) * 1000) / 10))
+      : null;
+    return {
+      active: true,
+      skill,
+      etaMs: training.etaMs,
+      progress,
+      progressNeeded,
+      percent,
+      observedAt: training.at
+    };
   }
 
   function socketInHunt() {
@@ -294,6 +333,7 @@
       gold: socketGold ?? number(firstVisible("#header-gold")?.textContent), coins: socketCoins ?? analyzerNumber(coinsElement?.textContent),
       backpack, metrics: { ...readLootMetrics(), ...socketMetricsValue },
       bestiaryLive: socketFresh() ? socketState.bestiary : null,
+      training: socketTraining(),
       target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null },
       socket: {
         connected: socketState.connected,
