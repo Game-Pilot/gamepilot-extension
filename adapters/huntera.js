@@ -901,10 +901,15 @@
     }
 
     // Potions are placed for the player, level-aware and in priority order.
+    // Best-effort: if placement can't run (editor/items tab not ready, character
+    // mid-transition), skip it — it must NEVER block the hunt from starting.
     let potions = { ok: true, placed: 0, plan: [] };
     if (potionRules.length) {
-      potions = await arrangePotions(potionRules);
-      if (!potions.ok) return { ok: false, configured: configured.length, skipped, error: potions.error };
+      try { potions = await arrangePotions(potionRules); }
+      catch (error) { potions = { ok: false, placed: 0, plan: [], error: error.message }; }
+      if (!potions.ok) {
+        for (const rule of potionRules) skipped.push({ actionKey: rule.actionKey || rule.action_key || null, reason: potions.error || "Não foi possível posicionar a poção" });
+      }
     }
 
     return { ok: true, configured: configured.length + (potions.placed || 0), skipped, actions: configured, potions: potions.plan || [] };
