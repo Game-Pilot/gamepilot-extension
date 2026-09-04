@@ -6,7 +6,8 @@ let automationActions = [];
 let automationPayload = {};
 let automationBusy = false;
 let commandBusy = false;
-let backpackThresholdArmed = true;
+let lastReturnAt = 0;
+const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
 let recoveryNoticeSent = false;
 
 // A stable per-tab connection key. Reloads in the same tab must reuse the same
@@ -36,7 +37,7 @@ const connectionKey = stableConnectionKey();
 const AUTOMATION_KEY = "gamepilot.automation";
 function persistAutomationState() {
   try {
-    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, backpackThresholdArmed, mode }));
+    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode }));
   } catch { /* storage unavailable */ }
 }
 function restoreAutomationState() {
@@ -47,7 +48,6 @@ function restoreAutomationState() {
     automationConfig = saved.automationConfig && typeof saved.automationConfig === "object" ? saved.automationConfig : {};
     automationActions = Array.isArray(saved.automationActions) ? saved.automationActions : [];
     automationPayload = saved.automationPayload && typeof saved.automationPayload === "object" ? saved.automationPayload : {};
-    backpackThresholdArmed = saved.backpackThresholdArmed !== false;
     if (saved.mode) mode = saved.mode;
   } catch { /* ignore corrupt state */ }
 }
@@ -83,7 +83,7 @@ async function handleCommand(command, commandId, payload = {}) {
     if (command === "start" || command === "start-hunt") {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       automationConfig = payload.hunt || {}; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
-      backpackThresholdArmed = true;
+      lastReturnAt = 0;
       const currentState = adapter?.readState?.();
       const selected = currentState?.characterSelection
         ? await adapter?.selectCharacter?.(payload.characterName || payload.character_name || payload.character?.name) || { ok: false, error: "Não foi possível selecionar o personagem para reconectar" }
@@ -102,7 +102,7 @@ async function handleCommand(command, commandId, payload = {}) {
       result = configured;
       if (configured.ok) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) atualizada(s)${configured.skipped?.length ? `; ${configured.skipped.length} indisponível(is) ignorada(s)` : ""}`, details: { configured: configured.configured || 0, skipped: configured.skipped || [], actions: automationActions, live: true } });
     } else if (command === "stop" || command === "return-town") {
-      automationEnabled = false; automationActions = []; automationPayload = {}; backpackThresholdArmed = true; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
+      automationEnabled = false; automationActions = []; automationPayload = {}; lastReturnAt = 0; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
     } else if (command === "open-store") {
       mode = "selling"; showBanner("abrindo loja"); result = await adapter?.openStore?.({ ...payload, autoLeave: true }) || result;
@@ -152,7 +152,7 @@ async function handleCommand(command, commandId, payload = {}) {
         automationConfig = payload.hunt || {};
         automationActions = nextActions;
         automationPayload = payload;
-        backpackThresholdArmed = true;
+        lastReturnAt = 0;
         mode = "starting";
         const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
         if (!configured.ok) throw new Error(configured.error || "Não foi possível reaplicar as ações do personagem");
@@ -184,15 +184,18 @@ async function handleCommand(command, commandId, payload = {}) {
 function thresholdReached(gameState) {
   const backpack = gameState?.backpack?.percent;
   const threshold = Number(automationConfig.backpackReturnPercent || 85);
-  if (backpack == null) return false;
-  if (backpack < threshold) backpackThresholdArmed = true;
-  return backpackThresholdArmed && backpack >= threshold;
+  if (backpack == null || backpack < threshold) return false;
+  // At/above the threshold, return — unless we tried recently. This cooldown
+  // replaces the old "armed" boolean, which stuck forever when a sale failed and
+  // the backpack never dropped back below the threshold to re-arm, silently
+  // disabling all further returns.
+  return Date.now() - lastReturnAt >= RETURN_COOLDOWN_MS;
 }
 
 async function runAutomationCycle(gameState) {
   if (!automationEnabled || automationBusy || commandBusy || !gameState?.inHunt || !thresholdReached(gameState)) return;
   automationBusy = true;
-  backpackThresholdArmed = false;
+  lastReturnAt = Date.now();
   const adapter = globalThis.GamePilotAdapters?.huntera;
   try {
     mode = "returning"; showBanner("limite atingido; retornando");
@@ -215,7 +218,6 @@ async function runAutomationCycle(gameState) {
     mode = "hunting";
     await sendEvent({ type: "hunt.started", message: "Caçada retomada automaticamente", details: { automatic: true } });
   } catch (error) {
-    if (adapter?.readState?.().inHunt) backpackThresholdArmed = true;
     mode = "error"; await sendEvent({ type: "automation.error", message: error.message, details: { status: "failed", errorMessage: error.message, automatic: true } });
   } finally {
     automationBusy = false;
