@@ -28,6 +28,30 @@ function stableConnectionKey() {
 }
 const connectionKey = stableConnectionKey();
 
+// Persist the automation state per tab so an extension reload or an F5 mid-hunt
+// doesn't silently disable the auto-return. sessionStorage is tab-scoped and
+// survives a page reload, so the restored state keeps the ongoing hunt managed
+// (auto-return, potion cycle) without needing a manual Stop+Start. Synced on
+// every state post; restored once on load, before the first post.
+const AUTOMATION_KEY = "gamepilot.automation";
+function persistAutomationState() {
+  try {
+    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, backpackThresholdArmed, mode }));
+  } catch { /* storage unavailable */ }
+}
+function restoreAutomationState() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(AUTOMATION_KEY) || "null");
+    if (!saved || typeof saved !== "object") return;
+    automationEnabled = Boolean(saved.automationEnabled);
+    automationConfig = saved.automationConfig && typeof saved.automationConfig === "object" ? saved.automationConfig : {};
+    automationActions = Array.isArray(saved.automationActions) ? saved.automationActions : [];
+    automationPayload = saved.automationPayload && typeof saved.automationPayload === "object" ? saved.automationPayload : {};
+    backpackThresholdArmed = saved.backpackThresholdArmed !== false;
+    if (saved.mode) mode = saved.mode;
+  } catch { /* ignore corrupt state */ }
+}
+
 function showBanner(text) {
   if (!banner) {
     banner = document.createElement("div");
@@ -201,6 +225,7 @@ async function runAutomationCycle(gameState) {
 let lastStatePostAt = 0;
 function sendState() {
   lastStatePostAt = Date.now();
+  persistAutomationState();
   const adapter = globalThis.GamePilotAdapters?.huntera;
   const gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname };
   if (gameState.characterSelection && automationEnabled) {
@@ -252,6 +277,7 @@ window.addEventListener("message", (event) => {
   if (Date.now() - lastStatePostAt >= 2500) sendState();
 });
 
+restoreAutomationState();
 showBanner("extensão carregada");
 sendState();
 setInterval(sendState, 3000);
