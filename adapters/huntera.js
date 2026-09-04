@@ -680,6 +680,164 @@
     await waitFor(".action-editor", 3000, false);
   }
 
+  // --- Level-aware potion placement (row 2 = support) -----------------------
+  // The action bar evaluates left-to-right, first-match-wins, so a lower
+  // threshold on the left beats a higher threshold on the right when both pass.
+  // We place the strongest usable potion at the lowest (most urgent) threshold
+  // on the left and the cheapest/weakest at the highest threshold on the right.
+  // The game itself marks what a character can use with .action-choice.locked,
+  // so no hardcoded level/vocation table is needed here.
+  const POTION_LADDER = {
+    health: ["lesser-health-potion", "health-potion", "strong-health-potion", "great-health-potion", "ultimate-health-potion", "supreme-health-potion"],
+    mana: ["mana-potion", "strong-mana-potion", "great-mana-potion", "ultimate-mana-potion"]
+  };
+  const POTION_ROW_START = 10; // slots 10..19 are the second (support) row
+
+  function potionResource(actionKey) {
+    const key = String(actionKey || "");
+    if (POTION_LADDER.health.includes(key)) return "health";
+    if (POTION_LADDER.mana.includes(key)) return "mana";
+    return null;
+  }
+
+  function isPotionRule(rule) {
+    const key = rule?.actionKey || rule?.action_key || "";
+    return Boolean(potionResource(key)) || /-potion$/i.test(String(key));
+  }
+
+  function actionEditorTab(editor, label) {
+    return [...editor.querySelectorAll(".action-tabs .tab")].find((tab) => tab.textContent.trim().toLowerCase() === label) || null;
+  }
+
+  async function openSlotEditor(slotIndex) {
+    const slot = document.querySelector(`.hud-slot[data-action-slot="${slotIndex}"]`);
+    if (!slot) return null;
+    slot.click();
+    const opened = await waitFor(".action-editor", 3000, true);
+    return opened ? document.querySelector(".action-editor") : null;
+  }
+
+  async function openItemsTab(editor) {
+    const tab = actionEditorTab(editor, "items");
+    if (!tab) return false;
+    tab.click();
+    return waitUntil(() => editor.querySelectorAll(".action-list .action-choice").length > 0, 3000, 80);
+  }
+
+  function usablePotionsByResource(editor) {
+    const usable = { health: [], mana: [] };
+    for (const choice of editor.querySelectorAll(".action-list .action-choice")) {
+      const key = choice.dataset.actionId;
+      const resource = potionResource(key);
+      if (resource && !choice.classList.contains("locked")) usable[resource].push(key);
+    }
+    for (const resource of ["health", "mana"]) {
+      usable[resource].sort((left, right) => POTION_LADDER[resource].indexOf(left) - POTION_LADDER[resource].indexOf(right));
+    }
+    return usable;
+  }
+
+  async function stepConditionValue(editor, desired) {
+    const target = Math.max(1, Math.min(99, Number(desired) || 1));
+    const readValue = () => Number(editor.querySelector(".condition-value")?.value || 0);
+    let guard = 0;
+    while (readValue() > target && guard < 40) { editor.querySelector(".condition-step-down")?.click(); await new Promise((r) => window.setTimeout(r, 18)); guard += 1; }
+    while (readValue() < target && guard < 80) { editor.querySelector(".condition-step-up")?.click(); await new Promise((r) => window.setTimeout(r, 18)); guard += 1; }
+    return readValue() === target;
+  }
+
+  function ensurePotionCheckboxes(editor, enabled) {
+    const percent = editor.querySelector(".action-condition-row input[type=\"checkbox\"]");
+    if (percent && !percent.checked) percent.click();
+    const enabledToggle = [...editor.querySelectorAll("input[type=\"checkbox\"]")].at(-1);
+    if (enabledToggle && enabledToggle.checked !== (enabled !== false)) enabledToggle.click();
+  }
+
+  function selectedPotionKey(editor) {
+    const selected = editor.querySelector(".action-choice.selected");
+    return selected ? selected.dataset.actionId || null : null;
+  }
+
+  async function placePotionInSlot(slotIndex, entry) {
+    const editor = await openSlotEditor(slotIndex);
+    if (!editor) return { ok: false, error: `O slot ${slotIndex} não abriu` };
+    if (!(await openItemsTab(editor))) { await closeActionEditor(editor); return { ok: false, error: "A aba de itens não abriu" }; }
+    const choice = [...editor.querySelectorAll(".action-list .action-choice")].find((item) => item.dataset.actionId === entry.actionKey && !item.classList.contains("locked"));
+    if (!choice) { await closeActionEditor(editor); return { ok: false, error: `A poção ${entry.actionKey} não está disponível` }; }
+    choice.click();
+    await waitUntil(() => selectedPotionKey(editor) === entry.actionKey, 2000, 60);
+    setSelectValue(editor.querySelector(".condition-subject"), "player");
+    setSelectValue(editor.querySelector(".condition-attribute"), entry.resource);
+    setSelectValue(editor.querySelector(".condition-operator"), entry.operator === "<" ? "<" : "<=");
+    await stepConditionValue(editor, entry.threshold);
+    ensurePotionCheckboxes(editor, true);
+    const save = [...editor.querySelectorAll("button")].find((button) => button.textContent.trim() === "Save");
+    if (!save) { await closeActionEditor(editor); return { ok: false, error: "Botão Salvar não encontrado" }; }
+    save.click();
+    const saved = await waitFor(".action-editor", 3000, false);
+    return saved ? { ok: true } : { ok: false, error: `A poção ${entry.actionKey} não confirmou o salvamento` };
+  }
+
+  // Clears a row-2 slot ONLY when it currently holds a potion — never touches a
+  // spell/rune the player parked there.
+  async function clearPotionSlot(slotIndex) {
+    const slot = document.querySelector(`.hud-slot[data-action-slot="${slotIndex}"]`);
+    if (!slot || !slot.classList.contains("assigned")) return;
+    const editor = await openSlotEditor(slotIndex);
+    if (!editor) return;
+    if (!potionResource(selectedPotionKey(editor))) { await closeActionEditor(editor); return; }
+    const remove = [...editor.querySelectorAll("button")].find((button) => button.classList.contains("action-remove") || button.textContent.trim() === "Remove");
+    if (remove) { remove.click(); await waitFor(".action-editor", 3000, false); } else await closeActionEditor(editor);
+  }
+
+  async function arrangePotions(potionRules) {
+    const rules = (Array.isArray(potionRules) ? potionRules : [])
+      .map((rule) => ({
+        actionKey: rule.actionKey || rule.action_key || "",
+        resource: potionResource(rule.actionKey || rule.action_key) || (["health", "mana"].includes(rule.resource) ? rule.resource : null),
+        operator: rule.operator === "<" ? "<" : "<=",
+        threshold: Math.max(1, Math.min(99, Number(rule.thresholdPercent ?? rule.threshold_percent) || 50)),
+        enabled: rule.enabled !== false
+      }))
+      .filter((rule) => rule.resource && rule.enabled);
+    if (!rules.length) return { ok: true, placed: 0, plan: [] };
+
+    // Read what THIS character can actually use, from any row-2 slot's Items tab.
+    const scratch = await openSlotEditor(POTION_ROW_START);
+    if (!scratch) return { ok: false, error: "Não foi possível abrir o editor de ações" };
+    if (!(await openItemsTab(scratch))) { await closeActionEditor(scratch); return { ok: false, error: "A aba de itens não abriu" }; }
+    const usable = usablePotionsByResource(scratch);
+    await closeActionEditor(scratch);
+
+    const strongest = (resource) => usable[resource][usable[resource].length - 1] || null;
+    const used = new Set();
+    const resolved = [];
+    for (const rule of rules) {
+      let key = usable[rule.resource].includes(rule.actionKey) ? rule.actionKey : strongest(rule.resource);
+      if (key && used.has(key)) {
+        const remaining = usable[rule.resource].filter((candidate) => !used.has(candidate));
+        key = remaining[remaining.length - 1] || null;
+      }
+      if (!key) continue; // nothing usable for this resource/tier
+      used.add(key);
+      resolved.push({ actionKey: key, resource: rule.resource, operator: rule.operator, threshold: rule.threshold });
+    }
+    if (!resolved.length) return { ok: true, placed: 0, plan: [], note: "Nenhuma poção usável para as regras" };
+
+    // Priority: lowest threshold first (most urgent) → leftmost slot.
+    resolved.sort((left, right) => left.threshold - right.threshold);
+
+    const placed = [];
+    for (let index = 0; index < resolved.length && index < 10; index += 1) {
+      const result = await placePotionInSlot(POTION_ROW_START + index, resolved[index]);
+      if (!result.ok) return { ok: false, error: result.error, placed: placed.length, plan: resolved };
+      placed.push({ slot: POTION_ROW_START + index, ...resolved[index] });
+    }
+    // Retire potions left in trailing row-2 slots from a previous, longer ladder.
+    for (let index = resolved.length; index < 10; index += 1) await clearPotionSlot(POTION_ROW_START + index);
+    return { ok: true, placed: placed.length, plan: placed };
+  }
+
   async function configureActionRule(rule) {
     const actionKey = String(rule?.actionKey || rule?.action_key || "").trim();
     if (!actionKey) return { ok: false, error: "Ação sem identificador" };
@@ -720,15 +878,18 @@
   }
 
   async function configureActions(rules = []) {
-    await waitUntil(() => document.querySelectorAll("button.hud-slot.assigned").some(visible), 5000, 100);
+    await waitUntil(() => [...document.querySelectorAll("button.hud-slot")].some(visible), 5000, 100);
+    const list = Array.isArray(rules) ? rules : [];
+    const potionRules = list.filter(isPotionRule);
+    const spellRules = list.filter((rule) => !isPotionRule(rule));
     const configured = [];
     const skipped = [];
-    for (const rule of Array.isArray(rules) ? rules.filter((item) => item?.enabled !== false || item?.actionKey || item?.action_key) : []) {
+
+    // Spells/runes keep the original behavior: the player parks them on the bar
+    // and we only tune the condition of the already-assigned slot.
+    for (const rule of spellRules.filter((item) => item?.enabled !== false || item?.actionKey || item?.action_key)) {
       const result = await configureActionRule(rule);
       if (!result.ok) {
-        // A character can legitimately lack a recommended potion/skill, for
-        // example at a low level or before the player assigns it to the HUD.
-        // That action must not block the whole hunt from starting.
         if (/não está atribuída à barra/i.test(result.error || "")) {
           skipped.push({ actionKey: rule.actionKey || rule.action_key || null, reason: result.error });
           continue;
@@ -737,7 +898,15 @@
       }
       configured.push(result);
     }
-    return { ok: true, configured: configured.length, skipped, actions: configured };
+
+    // Potions are placed for the player, level-aware and in priority order.
+    let potions = { ok: true, placed: 0, plan: [] };
+    if (potionRules.length) {
+      potions = await arrangePotions(potionRules);
+      if (!potions.ok) return { ok: false, configured: configured.length, skipped, error: potions.error };
+    }
+
+    return { ok: true, configured: configured.length + (potions.placed || 0), skipped, actions: configured, potions: potions.plan || [] };
   }
 
   async function openHuntWindow() {
