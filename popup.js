@@ -21,7 +21,9 @@ function renderStatus(response) {
     status.classList.remove("connected");
     return;
   }
-  const activeConnections = (response.connections || []).filter((item) => item.status !== "revoked").length;
+  const activeConnections = (response.connections || []).filter((item) =>
+    item.status === "connected" || item.status === "awaiting_character"
+  ).length;
   status.textContent = `Extensão vinculada · ${activeConnections} conexão(ões)`;
   status.classList.add("connected");
 }
