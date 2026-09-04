@@ -198,7 +198,9 @@ async function runAutomationCycle(gameState) {
   }
 }
 
+let lastStatePostAt = 0;
 function sendState() {
+  lastStatePostAt = Date.now();
   const adapter = globalThis.GamePilotAdapters?.huntera;
   const gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname };
   if (gameState.characterSelection && automationEnabled) {
@@ -236,6 +238,18 @@ function sendState() {
 // staleness sweep is the real guarantee; this just makes the common case fast.
 window.addEventListener("pagehide", () => {
   try { chrome.runtime.sendMessage({ type: "agent-disconnect", connectionKey }); } catch { /* worker may be gone */ }
+});
+
+// The 3s timer below is throttled to ~1/min by Chrome while the tab is in the
+// background, which stalled the live state and made the dashboard read
+// "Extensão desconectada · sem sinal" even mid-hunt. WebSocket message delivery
+// is NOT throttled, so we also post state (and run the automation cycle) when the
+// game socket speaks — calling sendState directly from the event, throttled by
+// timestamp rather than a timer, so it keeps flowing when the tab is backgrounded.
+window.addEventListener("message", (event) => {
+  if (event.source !== window || event.data?.source !== "gamepilot-huntera-socket") return;
+  if (event.data.kind !== "message" && event.data.kind !== "connection") return;
+  if (Date.now() - lastStatePostAt >= 2500) sendState();
 });
 
 showBanner("extensão carregada");
