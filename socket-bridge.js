@@ -9,6 +9,7 @@
 
   const MESSAGE_TYPES = Object.freeze({
     2: "action-bar-update",
+    9: "bestiary-progress",
     7: "auto-loot-update",
     8: "battle-settings-update",
     11: "capacity-overflow",

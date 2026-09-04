@@ -71,6 +71,7 @@
     actionBar: null,
     itemValues: null,
     marketItems: null,
+    bestiary: null,
     messages: {}
   };
 
@@ -144,6 +145,26 @@
       case "instance-enter": socketState.phase = "hunting"; break;
       case "player-died": socketState.phase = "idle"; break;
       case "action-bar-update": socketState.actionBar = payload; break;
+      case "bestiary-progress": {
+        // wire-9: the server's live per-creature kill feed, e.g.
+        // { kills: { spider: 180 }, killsRequired: 2500, completed: 1, total: 86 }.
+        // The analyzer metric is premium-locked to 0, so this is the only real
+        // source of bestiary kill counts. `kills` names the creature just killed
+        // with its absolute total.
+        const entries = payload && typeof payload.kills === "object" ? Object.entries(payload.kills) : [];
+        const [monsterKey, killCount] = entries[entries.length - 1] || [];
+        if (monsterKey) {
+          socketState.bestiary = {
+            monsterKey,
+            killCount: firstNumber(killCount),
+            killsRequired: firstNumber(payload.killsRequired) ?? 2500,
+            completed: firstNumber(payload.completed),
+            total: firstNumber(payload.total),
+            at: socketState.lastMessageAt
+          };
+        }
+        break;
+      }
       case "item-values": socketState.itemValues = payload; break;
       case "market-items": socketState.marketItems = payload; break;
       default: break;
@@ -272,6 +293,7 @@
       huntSessionRemainingMs: firstNumber(socketStats?.huntSessionRemainingMs),
       gold: socketGold ?? number(firstVisible("#header-gold")?.textContent), coins: socketCoins ?? analyzerNumber(coinsElement?.textContent),
       backpack, metrics: { ...readLootMetrics(), ...socketMetricsValue },
+      bestiaryLive: socketFresh() ? socketState.bestiary : null,
       target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null },
       socket: {
         connected: socketState.connected,

@@ -8,8 +8,6 @@ let automationBusy = false;
 let commandBusy = false;
 let lastReturnAt = 0;
 const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
-let lastBestiarySyncAt = 0;
-const BESTIARY_SYNC_INTERVAL_MS = 240000; // mid-hunt Cyclopedia sync cadence (4 min)
 let recoveryNoticeSent = false;
 
 // A stable per-tab connection key. Reloads in the same tab must reuse the same
@@ -226,42 +224,6 @@ async function runAutomationCycle(gameState) {
   }
 }
 
-// Mid-hunt bestiary progress. The Hunt Analyzer is premium-locked, so real kill
-// counts only ever appear in the Cyclopedia. To advance to the next creature
-// without the player returning to town first, we periodically open the
-// Cyclopedia during a bestiary hunt, read the real counts, and post them. The
-// API detects the current monster as completed and queues a "bestiary-next".
-// This is throttled and best-effort: a failed read never stops the hunt.
-async function runBestiarySyncCycle(gameState) {
-  if (!automationEnabled || automationBusy || commandBusy) return;
-  if (!gameState?.inHunt || !automationPayload?.bestiary?.enabled) return;
-  if (Date.now() - lastBestiarySyncAt < BESTIARY_SYNC_INTERVAL_MS) return;
-  automationBusy = true;
-  lastBestiarySyncAt = Date.now();
-  const adapter = globalThis.GamePilotAdapters?.huntera;
-  const previousMode = mode;
-  try {
-    mode = "syncing"; showBanner("sincronizando o bestiário durante a caçada");
-    const synced = await adapter?.syncBestiary?.();
-    if (!synced?.ok) throw new Error(synced?.error || "Falha ao sincronizar o bestiário");
-    await sendEvent({
-      type: "bestiary.synced",
-      message: `${synced.entries.length} entrada(s) do bestiário sincronizada(s) durante a caçada`,
-      details: {
-        status: "completed", automatic: true, characterId: automationPayload.characterId || null,
-        entries: synced.entries, pages: synced.pages, source: synced.source,
-        gameState: { ...adapter.readState(), gamepilot: { bestiary: automationPayload.bestiary || null, hunt: automationConfig } }
-      }
-    });
-    if (synced.closeAfterSync) await adapter?.closeBestiary?.();
-  } catch (error) {
-    showBanner(`sync do bestiário adiado: ${error.message}`);
-  } finally {
-    mode = adapter?.readState?.().inHunt ? "hunting" : previousMode;
-    automationBusy = false;
-  }
-}
-
 let lastStatePostAt = 0;
 function sendState() {
   lastStatePostAt = Date.now();
@@ -280,7 +242,6 @@ function sendState() {
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
   void runAutomationCycle(gameState);
-  void runBestiarySyncCycle(gameState);
   const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null } };
   // Only ask the API to dispatch a command when nothing is running. A command
   // is marked "dispatched" server-side the moment it is handed out, so pulling
