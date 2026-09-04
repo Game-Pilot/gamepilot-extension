@@ -1007,7 +1007,7 @@
   function readNpcSellOffers(shop) {
     return [...shop.querySelectorAll("#shop-offers .shop-offer")].filter(visible).map((offer) => {
       const label = offer.getAttribute("aria-label") || "";
-      const match = label.match(/^(.+),\s*([\d.,]+)\s+gp\s+cada$/i);
+      const match = label.match(/^(.+),\s*([\d.,]+)\s+gp\s+(?:cada|each)$/i);
       const npcValue = match ? number(match[2]) : null;
       return {
         itemId: offer.dataset.itemId || null,
@@ -1101,7 +1101,7 @@
     const npcTab = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "npc");
     if (!npcTab || npcTab.disabled) return { ok: true, sold: 0, auctionKept: 0, message: "Mercador indisponível nesta tela; loot foi preservado" };
     npcTab.click(); const shop = await waitFor(".shop-window", 3000, true); if (!shop) return { ok: false, error: "A aba do mercador não abriu" };
-    const sellTab = [...shop.querySelectorAll(".tab")].find((tab) => /vender/i.test(tab.textContent || ""));
+    const sellTab = [...shop.querySelectorAll(".tab")].find((tab) => /vender|sell/i.test(tab.textContent || ""));
     if (!sellTab) return { ok: true, sold: 0, message: "A aba de venda ainda não foi carregada" };
     sellTab.click();
     await waitFor("#shop-offers .shop-offer", 3000, true);
@@ -1121,7 +1121,7 @@
       const npcTabAfterAuction = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "npc" && visible(tab));
       npcTabAfterAuction?.click();
       await waitFor(".shop-window", 3000, true);
-      const sellTabAfterAuction = [...document.querySelectorAll(".shop-window .tab")].find((tab) => /vender/i.test(tab.textContent || ""));
+      const sellTabAfterAuction = [...document.querySelectorAll(".shop-window .tab")].find((tab) => /vender|sell/i.test(tab.textContent || ""));
       sellTabAfterAuction?.click();
       await waitFor("#shop-offers .shop-offer", 3000, true);
     }
