@@ -374,6 +374,28 @@
   }
 
   function bestiaryEntryButtons() {
+    // Preferred: the Cyclopedia card layout. A completed entry shows
+    // ".cyc-entry-count.done" (e.g. "✓ Concluída") with no numeric count, so the
+    // old text-only parse skipped it — that is why finishing a creature never
+    // advanced the bestiary. Detect completion and report it as full progress.
+    const cards = [...document.querySelectorAll(".cyc-entry-card")].filter(visible);
+    if (cards.length) {
+      return cards.map((button) => {
+        const name = button.querySelector(".cyc-entry-name")?.textContent?.replace(/\s+/g, " ").trim() || "";
+        if (!name) return null;
+        const countEl = button.querySelector(".cyc-entry-count");
+        const countText = countEl?.textContent?.replace(/\s+/g, " ").trim() || "";
+        const match = countText.match(/([\d.,]+)\s*\/\s*([\d.,]+)/);
+        const done = countEl?.classList.contains("done") || /conclu|complet|✓/i.test(countText);
+        if (done) return { button, name, currentKills: 2500, targetKills: 2500, completed: true };
+        if (!match) return null;
+        const currentKills = bestiaryNumber(match[1]);
+        const targetKills = bestiaryNumber(match[2]);
+        if (currentKills === null || targetKills === null || targetKills < 100) return null;
+        return { button, name, currentKills, targetKills };
+      }).filter(Boolean);
+    }
+    // Fallback for any other layout: parse "Name X / Y" from the button text.
     return [...document.querySelectorAll("button, [role=\"button\"]")].filter(visible).map((button) => {
       const text = button.textContent?.replace(/\s+/g, " ").trim() || "";
       const match = text.match(/^(.+?)\s+([\d.,]+)\s*\/\s*([\d.,]+)$/);
