@@ -675,6 +675,11 @@
     agressivo: ["agressivo", "aggressive", "reckless"],
     suicida: ["suicida", "suicidal", "suicide"]
   };
+  // Ascending intensity — a higher index means more creatures pulled.
+  const PULL_TIER_ORDER = ["cauteloso", "ousado", "agressivo", "suicida"];
+  // Sentinels that mean "pick the strongest pull the hunt offers" rather than a
+  // fixed tier. Bestiary hunts request this so each creature spawns at max density.
+  const MAX_PULL_ALIASES = ["max", "maxima", "maximo", "ultima", "ultimo", "highest", "suicida"];
 
   function tierMatches(element, requested) {
     const aliases = PULL_TIER_ALIASES[requested] || [requested];
@@ -685,8 +690,47 @@
     return element?.classList.contains("selected") || element?.classList.contains("active") || element?.getAttribute("aria-pressed") === "true" || element?.getAttribute("data-selected") === "true";
   }
 
+  function tierLocked(element) {
+    if (!element) return true;
+    if (element.disabled || element.getAttribute("aria-disabled") === "true" || element.getAttribute("data-locked") === "true") return true;
+    return /\b(locked|disabled|unavailable|indispon|bloquead)/i.test(element.className || "");
+  }
+
+  function tierRank(element) {
+    const name = tierName(element);
+    for (const [key, aliases] of Object.entries(PULL_TIER_ALIASES)) {
+      if (aliases.includes(name)) return PULL_TIER_ORDER.indexOf(key);
+    }
+    return -1;
+  }
+
+  async function selectMaxPullTier() {
+    const tiers = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible).filter((item) => !tierLocked(item));
+    if (!tiers.length) return { ok: false, error: "Nenhum pull disponível nesta caçada" };
+    // Highest known tier; if names are unrecognized, the last one in the DOM
+    // (the game lists them ascending, so the last is the strongest).
+    let best = tiers[tiers.length - 1];
+    let bestRank = tierRank(best);
+    for (const item of tiers) {
+      const rank = tierRank(item);
+      if (rank > bestRank) { best = item; bestRank = rank; }
+    }
+    const label = tierName(best) || "última";
+    if (!tierSelected(best)) {
+      best.click();
+      const applied = await waitUntil(() => {
+        const selected = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible).find(tierSelected);
+        return Boolean(selected && tierName(selected) === tierName(best));
+      }, 1800, 80);
+      if (!applied) return { ok: false, error: "O Huntera não confirmou o pull máximo" };
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    return { ok: true, tier: label };
+  }
+
   async function selectPullTier(value) {
     const requested = normalizeItemName(value || "Cauteloso");
+    if (MAX_PULL_ALIASES.includes(requested)) return selectMaxPullTier();
     const tiers = [...document.querySelectorAll(".hunt-window .hunt-tier")].filter(visible);
     const tier = tiers.find((item) => tierMatches(item, requested));
     if (!tier) return { ok: false, error: `Pull ${value || "Cauteloso"} não está disponível para esta caçada` };
