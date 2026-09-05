@@ -7,7 +7,9 @@ let automationPayload = {};
 let automationBusy = false;
 let commandBusy = false;
 let lastReturnAt = 0;
+let lastTrainingAttemptAt = 0;
 const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
+const TRAINING_RETRY_MS = 30000;
 let recoveryNoticeSent = false;
 
 // A stable per-tab connection key. Reloads in the same tab must reuse the same
@@ -80,9 +82,19 @@ async function handleCommand(command, commandId, payload = {}) {
   const adapter = globalThis.GamePilotAdapters?.huntera;
   let result = { ok: false, error: "Adaptador Huntera não carregado" };
   try {
-    if (command === "start" || command === "start-hunt") {
+    if (command === "start" && payload.operation === "training") {
+      automationEnabled = false;
+      automationPayload = { ...automationPayload, ...payload };
+      mode = "starting";
+      showBanner("iniciando Online Training");
+      result = await adapter?.startTraining?.(payload) || result;
+      if (result.ok) {
+        mode = "training";
+        await sendEvent({ type: "training.started", message: result.alreadyTraining ? "Treino online já estava ativo" : "Treino online iniciado", details: { payload, skill: result.skill, mode: "online" } });
+      }
+    } else if (command === "start" || command === "start-hunt") {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
-      automationConfig = payload.hunt || {}; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
+      automationConfig = payload.hunt || {}; automationPayload = payload; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
       lastReturnAt = 0;
       const currentState = adapter?.readState?.();
       const selected = currentState?.characterSelection
@@ -101,6 +113,14 @@ async function handleCommand(command, commandId, payload = {}) {
       if (configured.ok) { automationActions = appliedActionRules(nextActions, configured); automationPayload = { ...automationPayload, ...payload, actions: automationActions }; }
       result = configured;
       if (configured.ok) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) atualizada(s)${configured.skipped?.length ? `; ${configured.skipped.length} indisponível(is) ignorada(s)` : ""}`, details: { configured: configured.configured || 0, skipped: configured.skipped || [], actions: automationActions, live: true } });
+    } else if (command === "stop" && payload.operation === "training") {
+      mode = "returning";
+      showBanner("parando Online Training");
+      result = await adapter?.stopTraining?.() || result;
+      if (result.ok) {
+        mode = "idle";
+        await sendEvent({ type: "training.stopped", message: result.alreadyStopped ? "Treino já estava parado" : "Treino online encerrado", details: { payload } });
+      }
     } else if (command === "stop" || command === "return-town") {
       automationEnabled = false; automationActions = []; automationPayload = {}; lastReturnAt = 0; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
@@ -224,12 +244,47 @@ async function runAutomationCycle(gameState) {
   }
 }
 
+async function runAutoTrainingCycle(gameState) {
+  const training = automationPayload?.training;
+  const staminaMs = Number(gameState?.staminaMs);
+  if (!automationEnabled || automationBusy || commandBusy || !training?.autoWhenStaminaEmpty) return;
+  if (!Number.isFinite(staminaMs) || staminaMs > 0 || gameState?.inHunt || !gameState?.inTown || gameState?.training?.active) return;
+  if (Date.now() - lastTrainingAttemptAt < TRAINING_RETRY_MS) return;
+  lastTrainingAttemptAt = Date.now();
+  automationBusy = true;
+  const adapter = globalThis.GamePilotAdapters?.huntera;
+  try {
+    mode = "starting";
+    showBanner("stamina encerrada; iniciando Online Training");
+    const started = await adapter?.startTraining?.({ training, characterName: gameState?.character?.name });
+    if (!started?.ok) throw new Error(started?.error || "Não foi possível iniciar o Online Training");
+    automationEnabled = false;
+    mode = "training";
+    await sendEvent({ type: "training.started", message: "Stamina encerrada; Online Training iniciado automaticamente", details: { automatic: true, skill: started.skill, mode: "online" } });
+  } catch (error) {
+    mode = "error";
+    await sendEvent({ type: "automation.error", message: error.message, details: { automatic: true, operation: "training", status: "failed", errorMessage: error.message } });
+  } finally {
+    automationBusy = false;
+    persistAutomationState();
+  }
+}
+
 let lastStatePostAt = 0;
 function sendState() {
   lastStatePostAt = Date.now();
   persistAutomationState();
   const adapter = globalThis.GamePilotAdapters?.huntera;
   const gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname };
+  // Transient command modes must not outlive the UI state they describe. This
+  // clears a stale `selling` after the shop closes (or after a reload), which
+  // previously hid a real training-update behind a false "Vendendo" status.
+  if (!commandBusy && !automationBusy) {
+    if (gameState.shopOpen) mode = "selling";
+    else if (gameState.inHunt) mode = "hunting";
+    else if (gameState.training?.active) mode = "training";
+    else if (["selling", "hunting", "returning", "starting", "training"].includes(mode)) mode = "idle";
+  }
   if (gameState.characterSelection && automationEnabled) {
     if (!recoveryNoticeSent) {
       recoveryNoticeSent = true;
@@ -241,6 +296,7 @@ function sendState() {
     recoveryNoticeSent = false;
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
+  void runAutoTrainingCycle(gameState);
   void runAutomationCycle(gameState);
   const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null } };
   // Only ask the API to dispatch a command when nothing is running. A command

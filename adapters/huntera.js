@@ -322,7 +322,7 @@
     const backpack = socketFresh() ? (socketBackpack() || readBackpack()) : readBackpack();
     return {
       gameKey: "huntera", detected: Boolean(name), loggedIn: Boolean(name), page: location.pathname,
-      inHunt: domInHunt ? true : (inTown() ? false : (socketHunt ?? false)), shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
+      inHunt: domInHunt ? true : (inTown() ? false : (socketHunt ?? false)), inTown: inTown(), shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
       premium: premiumOffer ? false : (document.querySelector(".analyzer-body") ? true : null),
       character: name ? { name, externalRef: name, vocation, level: levelMatch ? Number(levelMatch[1]) : null, premium: premiumOffer ? false : null } : null,
       resources: { health: socketHealth?.current !== null && socketHealth?.max ? socketHealth : bar(".hud-hp"), mana: socketMana?.current !== null && socketMana?.max ? socketMana : bar(".hud-mp") },
@@ -1052,6 +1052,68 @@
     return opened ? { ok: true } : { ok: false, error: "O seletor de caçadas não abriu" };
   }
 
+  const TRAINING_SKILLS = new Set(["club", "sword", "axe", "distance", "shielding", "magic"]);
+
+  async function startTraining(payload = {}) {
+    const training = payload.training || payload;
+    const skill = TRAINING_SKILLS.has(training.skill) ? training.skill : null;
+    if (!skill) return { ok: false, error: "Selecione uma habilidade válida para o treino" };
+    if (characterSelectionVisible()) {
+      const selected = await selectCharacter(payload.characterName || payload.character_name || payload.character?.name);
+      if (!selected.ok) return selected;
+    }
+    const current = readState();
+    if (current.training?.active && current.training.skill === skill) return { ok: true, alreadyTraining: true, skill, mode: "online" };
+    if (current.inHunt) {
+      const left = await leaveHunt();
+      if (!left.ok) return left;
+    }
+    if (!inTown()) return { ok: false, error: "O personagem precisa estar na cidade para iniciar o treino" };
+
+    const opened = await openHuntWindow();
+    if (!opened.ok) return opened;
+    const trainingTab = document.querySelector('.hunt-tab[data-tab="training"]');
+    if (!trainingTab) return { ok: false, error: "A aba Training não foi encontrada" };
+    trainingTab.click();
+    const trainingPanel = await waitUntil(() => visible(document.querySelector(".hunt-training")), 5000, 100);
+    if (!trainingPanel) return { ok: false, error: "A tela de treino não abriu" };
+
+    const skillButton = document.querySelector(`.hunt-training .train-skill[data-skill="${skill}"]`);
+    if (!skillButton || skillButton.disabled) return { ok: false, error: `A habilidade ${skill} não está disponível para este personagem` };
+    skillButton.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+
+    const trainingModes = [...document.querySelectorAll(".hunt-training .train-mode")];
+    const onlineMode = trainingModes.find((section) => /online training/i.test(section.querySelector("h3")?.textContent || "")) || trainingModes[1];
+    const startButton = onlineMode?.querySelector(".train-start");
+    if (!startButton || startButton.disabled) return { ok: false, error: "O Online Training não está disponível neste momento" };
+    startButton.click();
+    const started = await waitUntil(() => {
+      const state = socketTraining();
+      return state.active && state.skill === skill;
+    }, 10000, 100);
+    return started
+      ? { ok: true, skill, mode: "online" }
+      : { ok: false, error: "O Huntera não confirmou o início do Online Training" };
+  }
+
+  async function stopTraining() {
+    if (!readState().training?.active) return { ok: true, alreadyStopped: true };
+    const opened = await openHuntWindow();
+    if (!opened.ok) return opened;
+    const trainingTab = document.querySelector('.hunt-tab[data-tab="training"]');
+    if (!trainingTab) return { ok: false, error: "A aba Training não foi encontrada" };
+    trainingTab.click();
+    const stopReady = await waitUntil(() => [...document.querySelectorAll(".hunt-training .train-active button")].some((item) => !item.disabled), 5000, 100);
+    const stopButton = stopReady
+      ? [...document.querySelectorAll(".hunt-training .train-active button")].find((item) => !item.disabled)
+      : null;
+    if (!stopButton) return { ok: false, error: "O botão para parar o treino não foi encontrado" };
+    stopButton.click();
+    const stopped = await waitUntil(() => !socketTraining().active, 10000, 100);
+    return stopped ? { ok: true } : { ok: false, error: "O Huntera não confirmou o fim do treino" };
+  }
+
   function matchesHunt(entry, target) {
     const normalizedTarget = String(target || "").trim().toLowerCase();
     if (!normalizedTarget) return false;
@@ -1270,5 +1332,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, startTraining, stopTraining, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();
