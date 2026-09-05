@@ -82,7 +82,16 @@ async function handleCommand(command, commandId, payload = {}) {
   const adapter = globalThis.GamePilotAdapters?.huntera;
   let result = { ok: false, error: "Adaptador Huntera não carregado" };
   try {
-    if (command === "start" && payload.operation === "training") {
+    if (command === "prepare-group") {
+      automationEnabled = false;
+      mode = "preparing";
+      showBanner(payload.group?.role === "leader" ? "criando party e enviando convites" : "aguardando convite da party");
+      result = await adapter?.prepareGroup?.(payload) || result;
+      if (result.ok) {
+        mode = "idle";
+        await sendEvent({ type: "group.party-ready", message: "Party preparada no Huntera", details: { payload, party: result.party } });
+      }
+    } else if (command === "start" && payload.operation === "training") {
       automationEnabled = false;
       automationPayload = { ...automationPayload, ...payload };
       mode = "starting";
@@ -92,6 +101,24 @@ async function handleCommand(command, commandId, payload = {}) {
         mode = "training";
         await sendEvent({ type: "training.started", message: result.alreadyTraining ? "Treino online já estava ativo" : "Treino online iniciado", details: { payload, skill: result.skill, mode: "online" } });
       }
+    } else if ((command === "start" || command === "start-hunt") && payload.operation === "group-hunt") {
+      const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
+      automationConfig = payload.hunt || {}; automationPayload = payload; mode = "starting"; showBanner(payload.group?.role === "leader" ? "iniciando caçada com o time" : "aguardando convite da caçada em grupo");
+      lastReturnAt = 0;
+      const currentState = adapter?.readState?.();
+      const selected = currentState?.characterSelection
+        ? await adapter?.selectCharacter?.(payload.characterName || payload.character_name || payload.character?.name) || { ok: false, error: "Não foi possível selecionar o personagem para reconectar" }
+        : { ok: true };
+      const configured = selected.ok ? await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 } : selected;
+      if (configured.ok) { automationEnabled = true; automationActions = appliedActionRules(nextActions, configured); automationPayload = payload; }
+      else automationEnabled = false;
+      result = configured.ok
+        ? payload.group?.role === "leader"
+          ? await adapter?.startGroupHunt?.(payload) || result
+          : await adapter?.acceptGroupHunt?.(payload) || result
+        : configured;
+      if (configured.ok && (configured.configured || configured.skipped?.length)) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) configurada(s)${configured.skipped?.length ? `; ${configured.skipped.length} indisponível(is) ignorada(s)` : ""}`, details: { configured: configured.configured || 0, skipped: configured.skipped || [], actions: automationActions } });
+      if (result.ok) { mode = "hunting"; recoveryNoticeSent = false; await sendEvent({ type: "group.hunt-started", message: "Caçada com o time iniciada", details: { payload, team: true } }); }
     } else if (command === "start" || command === "start-hunt") {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       automationConfig = payload.hunt || {}; automationPayload = payload; mode = "starting"; showBanner("aplicando ações e iniciando caçada");
@@ -230,6 +257,12 @@ async function runAutomationCycle(gameState) {
     await sendEvent({ type: "items.sold", message: sold.message || `Ciclo vendeu ${sold.sold || 0} ação(ões)`, details: { ...sold, automatic: true } });
     await adapter?.closeStore?.();
     if (!automationEnabled) return;
+    if (automationPayload?.operation === "group-hunt") {
+      automationEnabled = false;
+      mode = "idle";
+      await sendEvent({ type: "group.member-returned", message: "Personagem voltou e vendeu; aguardando o grupo antes de retomar", details: { automatic: true, group: automationPayload.group || null } });
+      return;
+    }
     mode = "starting";
     const configured = await adapter?.configureActions?.(automationActions) || { ok: true, configured: 0 };
     if (!configured.ok) throw new Error(configured.error || "Não foi possível reaplicar as ações do personagem");

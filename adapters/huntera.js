@@ -320,11 +320,16 @@
     const socketCoins = firstNumber(socketState.coins);
     const socketMetricsValue = socketMetrics();
     const backpack = socketFresh() ? (socketBackpack() || readBackpack()) : readBackpack();
+    const level = levelMatch ? Number(levelMatch[1]) : null;
+    const party = readPartyState();
     return {
       gameKey: "huntera", detected: Boolean(name), loggedIn: Boolean(name), page: location.pathname,
       inHunt: domInHunt ? true : (inTown() ? false : (socketHunt ?? false)), inTown: inTown(), shopOpen: visible(document.querySelector(".trade-window")), characterSelection,
       premium: premiumOffer ? false : (document.querySelector(".analyzer-body") ? true : null),
-      character: name ? { name, externalRef: name, vocation, level: levelMatch ? Number(levelMatch[1]) : null, premium: premiumOffer ? false : null } : null,
+      character: name ? {
+        name, externalRef: name, vocation, level, premium: premiumOffer ? false : null,
+        shareExperience: level ? { min: Math.ceil(level * 2 / 3), max: Math.floor(level * 3 / 2) } : null
+      } : null,
       resources: { health: socketHealth?.current !== null && socketHealth?.max ? socketHealth : bar(".hud-hp"), mana: socketMana?.current !== null && socketMana?.max ? socketMana : bar(".hud-mp") },
       experience,
       stamina: socketStamina() || firstVisible(".hud-stamina-clock")?.textContent?.trim() || null,
@@ -334,7 +339,8 @@
       backpack, metrics: { ...readLootMetrics(), ...socketMetricsValue },
       bestiaryLive: socketFresh() ? socketState.bestiary : null,
       training: socketTraining(),
-      target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null },
+      party,
+      target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null, strategy: party.targetStrategy, label: party.targetLabel },
       socket: {
         connected: socketState.connected,
         fresh: socketFresh(),
@@ -375,6 +381,215 @@
 
   function normalizeItemName(value) {
     return String(value || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  }
+
+  function setControlValue(control, value) {
+    if (!control) return;
+    const prototype = control instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    if (setter) setter.call(control, value);
+    else control.value = value;
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function readPartyState() {
+    const nav = document.querySelector("#nav-party");
+    const rows = [...document.querySelectorAll(".party-window .party-member")];
+    const members = rows.map((row) => ({
+      name: row.querySelector(".party-name")?.textContent?.trim() || null,
+      leader: Boolean(row.querySelector(".party-leader"))
+    })).filter((member) => member.name);
+    const costsState = document.querySelector(".party-window .party-costs-state")?.textContent?.trim() || "";
+    const sharedCosts = [...document.querySelectorAll(".party-window .party-costs-stop")].some(visible)
+      || /(?:rateio|cost sharing).*(?:ativ|active)|(?:ativ|active).*(?:rateio|cost sharing)/i.test(normalizeItemName(costsState));
+    const target = document.querySelector(".hud-target-strategy");
+    const selectedOption = target?.selectedOptions?.[0] || target?.querySelector(`option[value="${CSS.escape(target?.value || "")}"]`);
+    return {
+      active: visible(nav) || members.length > 0,
+      members,
+      leaderName: members.find((member) => member.leader)?.name || null,
+      sharedCosts,
+      sharedCostsPending: /aguard|waiting|pend/i.test(normalizeItemName(costsState)),
+      targetStrategy: target?.value || null,
+      targetLabel: selectedOption?.textContent?.trim() || null
+    };
+  }
+
+  function inviteCards() {
+    return [...document.querySelectorAll(".party-invite")].filter(visible);
+  }
+
+  function findInviteCard(kind) {
+    return inviteCards().find((card) => {
+      const text = normalizeItemName(`${card.getAttribute("aria-label") || ""} ${card.textContent || ""}`);
+      const huntIcon = Boolean(card.querySelector('img[src*="/assets/nav/hunt.png"]'));
+      if (kind === "team") return huntIcon || /team hunt invitation|convite.*cacada.*(?:grupo|time)/.test(text);
+      if (kind === "follow") return /follow party leader|seguir.*(?:lider|puxador)/.test(text);
+      if (kind === "costs") return /hunt cost sharing|rateio.*cust|compartilh.*cust|custos.*cacada/.test(text);
+      if (kind === "experience-warning") return /shared experience warning|experiencia compartilhada|compartilhar exp/.test(text);
+      if (kind === "party") return !huntIcon && !/follow|seguir|cost|custo|rateio|experien/.test(text) && /party invitation|convite.*(?:party|grupo)/.test(text);
+      return false;
+    }) || null;
+  }
+
+  function clickInviteAction(card, accept = true) {
+    const buttons = [...(card?.querySelectorAll(".invite-actions button") || [])].filter(visible);
+    const button = buttons[accept ? 0 : 1];
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  }
+
+  function friendEntry(characterName) {
+    const target = normalizeItemName(characterName);
+    return [...document.querySelectorAll(".friends-window .friends-entry")].find((row) => normalizeItemName(row.querySelector(".friends-name")?.textContent) === target) || null;
+  }
+
+  async function openFriendsWindow() {
+    if (visible(document.querySelector(".friends-window"))) return { ok: true, alreadyOpen: true };
+    const button = firstVisible("#nav-friends");
+    if (!button || !visible(button)) return { ok: false, error: "A lista de amigos não está disponível" };
+    button.click();
+    return await waitFor(".friends-window", 5000, true) ? { ok: true } : { ok: false, error: "A lista de amigos não abriu" };
+  }
+
+  async function openPartyWindow() {
+    if (visible(document.querySelector(".party-window"))) return { ok: true, alreadyOpen: true };
+    const button = document.querySelector("#nav-party");
+    if (!button || !visible(button)) return { ok: false, error: "A party ainda não foi formada" };
+    button.click();
+    return await waitFor(".party-window", 5000, true) ? { ok: true } : { ok: false, error: "A janela da party não abriu" };
+  }
+
+  async function ensureFriend(characterName) {
+    const opened = await openFriendsWindow();
+    if (!opened.ok) return opened;
+    let row = friendEntry(characterName);
+    if (!row) {
+      const form = document.querySelector(".friends-window .friends-search");
+      const input = form?.querySelector("input");
+      if (!form || !input) return { ok: false, error: `Não foi possível buscar ${characterName} na lista de amigos` };
+      setControlValue(input, characterName);
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      const added = await waitUntil(() => Boolean(friendEntry(characterName)), 10000, 150);
+      if (!added) return { ok: false, error: `${characterName} não apareceu na lista de amigos após adicionar` };
+      row = friendEntry(characterName);
+    }
+    return { ok: true, row, online: row.classList.contains("online") };
+  }
+
+  async function waitForPartyMembers(expectedNames, timeout = 60000) {
+    const normalized = expectedNames.map(normalizeItemName);
+    const navReady = await waitUntil(() => visible(document.querySelector("#nav-party")), timeout, 200);
+    if (!navReady) return false;
+    const opened = await openPartyWindow();
+    if (!opened.ok) return false;
+    return waitUntil(() => {
+      const actual = readPartyState().members.map((member) => normalizeItemName(member.name));
+      return normalized.every((name) => actual.includes(name));
+    }, timeout, 200);
+  }
+
+  async function inviteFriendToParty(characterName, expectedNames) {
+    const currentNames = readPartyState().members.map((member) => normalizeItemName(member.name));
+    if (currentNames.includes(normalizeItemName(characterName))) return { ok: true, alreadyJoined: true };
+    const friend = await ensureFriend(characterName);
+    if (!friend.ok) return friend;
+    if (!friend.online) return { ok: false, error: `${characterName} está offline no Huntera` };
+    friend.row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: friend.row.getBoundingClientRect().left + 12, clientY: friend.row.getBoundingClientRect().top + 12 }));
+    const menuReady = await waitUntil(() => visible(document.querySelector(".friends-context-menu")), 3000, 80);
+    if (!menuReady) return { ok: false, error: `O menu de ${characterName} não abriu` };
+    const buttons = [...document.querySelectorAll(".friends-context-menu button")].filter(visible);
+    const invite = buttons.find((button) => /invite.*party|convid.*(?:party|grupo)/i.test(normalizeItemName(button.textContent))) || buttons[1];
+    if (!invite || invite.disabled) return { ok: false, error: `A opção de convidar ${characterName} para a party não está disponível` };
+    invite.click();
+    const warning = await waitUntil(() => Boolean(findInviteCard("experience-warning")), 1200, 80);
+    if (warning) {
+      clickInviteAction(findInviteCard("experience-warning"), false);
+      return { ok: false, error: `${characterName} causaria penalidade de experiência compartilhada` };
+    }
+    const joined = await waitForPartyMembers(expectedNames, 60000);
+    return joined ? { ok: true } : { ok: false, error: `${characterName} não aceitou o convite da party a tempo` };
+  }
+
+  async function setPartyTarget(role, leaderName) {
+    if (role !== "leader") {
+      const followPrompt = findInviteCard("follow");
+      if (followPrompt && clickInviteAction(followPrompt, true)) await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
+    const select = document.querySelector(".hud-target-strategy");
+    if (!select) return { ok: false, error: "O seletor de alvo do Huntera não foi encontrado" };
+    let value = "nearest";
+    if (role !== "leader") {
+      const target = normalizeItemName(leaderName);
+      const option = [...select.querySelectorAll('option[value^="follow-member-"]')].find((item) => normalizeItemName(item.textContent).includes(target));
+      if (!option) return { ok: false, error: `A opção de seguir ${leaderName} ainda não apareceu` };
+      value = option.value;
+    }
+    setControlValue(select, value);
+    const changed = await waitUntil(() => select.value === value, 3000, 80);
+    return changed ? { ok: true, value } : { ok: false, error: "O Huntera não confirmou a estratégia de alvo da party" };
+  }
+
+  async function enableSharedCosts(role) {
+    const opened = await openPartyWindow();
+    if (!opened.ok) return opened;
+    if (readPartyState().sharedCosts) return { ok: true, alreadyEnabled: true };
+    if (role === "leader") {
+      const offer = [...document.querySelectorAll(".party-window .party-costs-offer")].find(visible);
+      if (!offer || offer.disabled) return { ok: false, error: "O rateio de custos não pode ser iniciado agora" };
+      offer.click();
+    } else {
+      const prompted = await waitUntil(() => Boolean(findInviteCard("costs")), 60000, 150);
+      if (!prompted || !clickInviteAction(findInviteCard("costs"), true)) return { ok: false, error: "O convite para ratear os custos não chegou" };
+    }
+    const active = await waitUntil(() => readPartyState().sharedCosts, 60000, 200);
+    return active ? { ok: true } : { ok: false, error: "O rateio de custos não foi aceito por todos a tempo" };
+  }
+
+  async function prepareGroup(payload = {}) {
+    if (characterSelectionVisible()) {
+      const selected = await selectCharacter(payload.characterName || payload.character_name || payload.character?.name);
+      if (!selected.ok) return selected;
+    }
+    const current = readState();
+    if (current.inHunt) return { ok: false, error: "Saia da caçada atual antes de preparar a party" };
+    if (current.training?.active) {
+      const stopped = await stopTraining();
+      if (!stopped.ok) return { ok: false, error: stopped.error || "Não foi possível encerrar o treino antes de preparar a party" };
+    }
+    const group = payload.group || {};
+    const members = Array.isArray(group.members) ? group.members.filter((member) => member?.name) : [];
+    const leader = members.find((member) => member.characterId === group.leaderCharacterId) || members.find((member) => member.role === "leader");
+    if (members.length < 2 || members.length > 4 || !leader?.name) return { ok: false, error: "A party precisa de um puxador e de 2 a 4 personagens" };
+    const expectedNames = members.map((member) => member.name);
+    const role = group.role === "leader" ? "leader" : "follower";
+    if (role === "leader") {
+      const existing = readPartyState().members.map((member) => normalizeItemName(member.name));
+      const expected = expectedNames.map(normalizeItemName);
+      if (existing.some((name) => !expected.includes(name))) return { ok: false, error: "O puxador já está em uma party com participantes fora deste grupo" };
+      for (const member of members.filter((member) => member.characterId !== group.leaderCharacterId)) {
+        const invited = await inviteFriendToParty(member.name, [leader.name, member.name]);
+        if (!invited.ok) return invited;
+      }
+      if (!await waitForPartyMembers(expectedNames, 60000)) return { ok: false, error: "Nem todos os participantes entraram na party" };
+    } else {
+      const inParty = readPartyState().members.some((member) => normalizeItemName(member.name) === normalizeItemName(leader.name));
+      if (!inParty) {
+        const received = await waitUntil(() => Boolean(findInviteCard("party")), 60000, 150);
+        if (!received || !clickInviteAction(findInviteCard("party"), true)) return { ok: false, error: `O convite de ${leader.name} não chegou` };
+      }
+      if (!await waitForPartyMembers(expectedNames, 60000)) return { ok: false, error: "A party não reuniu todos os participantes a tempo" };
+    }
+    const targeted = await setPartyTarget(role, leader.name);
+    if (!targeted.ok) return targeted;
+    if (group.rules?.shareCosts !== false) {
+      const costs = await enableSharedCosts(role);
+      if (!costs.ok) return costs;
+    }
+    return { ok: true, party: readPartyState() };
   }
 
   function itemKeyFromName(value) {
@@ -1128,6 +1343,7 @@
 
   function huntStarted() {
     if (visible(document.querySelector("#nav-leave-hunt"))) return true;
+    if (socketInHunt() === true) return true;
     const selected = [...document.querySelectorAll(".hunt-window .hunt-entry")].find((entry) => visible(entry) && entry.classList.contains("selected"));
     const startButton = firstVisible("#hunt-start");
     return Boolean(selected && startButton?.disabled && /trocar/i.test(startButton.textContent || ""));
@@ -1145,7 +1361,7 @@
     });
   }
 
-  async function startHunt(payload = {}) {
+  async function prepareHuntSelection(payload = {}) {
     const hunt = payload.hunt || {};
     if (characterSelectionVisible()) {
       const selected = await selectCharacter(payload.characterName || payload.character_name || payload.character?.name);
@@ -1174,11 +1390,41 @@
     if (!pull.ok) return pull;
     const loot = await configureLoot(hunt);
     if (!loot.ok) return loot;
+    return { ok: true, entry, pull, loot, hunt };
+  }
+
+  async function startHunt(payload = {}) {
+    const prepared = await prepareHuntSelection(payload);
+    if (!prepared.ok || prepared.alreadyStarted) return prepared;
     const startButton = firstVisible("#hunt-start");
     if (!startButton) return { ok: false, error: "Botão para confirmar a caçada não encontrado" };
     startButton.click();
     const started = await waitForHuntStarted();
-    return started ? { ok: true, huntId: entry.dataset.huntId, hunt: hunt.spotKey || hunt.monsterKey, pull, loot } : { ok: false, error: "A tela de caçada não confirmou o início" };
+    return started ? { ok: true, huntId: prepared.entry.dataset.huntId, hunt: prepared.hunt.spotKey || prepared.hunt.monsterKey, pull: prepared.pull, loot: prepared.loot } : { ok: false, error: "A tela de caçada não confirmou o início" };
+  }
+
+  async function startGroupHunt(payload = {}) {
+    const prepared = await prepareHuntSelection(payload);
+    if (!prepared.ok || prepared.alreadyStarted) return prepared;
+    const startButton = firstVisible("#hunt-start-team");
+    if (!startButton || startButton.disabled) return { ok: false, error: "A opção Caçar com time ainda não está disponível para esta party" };
+    startButton.click();
+    const started = await waitForHuntStarted(70000);
+    return started
+      ? { ok: true, huntId: prepared.entry.dataset.huntId, hunt: prepared.hunt.spotKey || prepared.hunt.monsterKey, pull: prepared.pull, loot: prepared.loot, team: true }
+      : { ok: false, error: "Nem todos aceitaram o convite para caçar com o time" };
+  }
+
+  async function acceptGroupHunt(payload = {}) {
+    if (characterSelectionVisible()) {
+      const selected = await selectCharacter(payload.characterName || payload.character_name || payload.character?.name);
+      if (!selected.ok) return selected;
+    }
+    if (readState().inHunt) return { ok: true, alreadyStarted: true, team: true };
+    const received = await waitUntil(() => Boolean(findInviteCard("team")), 60000, 150);
+    if (!received || !clickInviteAction(findInviteCard("team"), true)) return { ok: false, error: "O convite para caçar com o time não chegou" };
+    const started = await waitForHuntStarted(70000);
+    return started ? { ok: true, team: true } : { ok: false, error: "O Huntera não confirmou o início da caçada em grupo" };
   }
 
   // The town is the ground truth for "left the hunt": the leave button is gone
@@ -1346,5 +1592,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, startHunt, startTraining, stopTraining, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();
