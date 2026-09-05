@@ -1064,6 +1064,10 @@
     }
     const current = readState();
     if (current.training?.active && current.training.skill === skill) return { ok: true, alreadyTraining: true, skill, mode: "online" };
+    if (current.training?.active) {
+      const stopped = await stopTraining();
+      if (!stopped.ok) return { ok: false, error: stopped.error || "Não foi possível encerrar o treino atual" };
+    }
     if (current.inHunt) {
       const left = await leaveHunt();
       if (!left.ok) return left;
@@ -1147,11 +1151,21 @@
       const selected = await selectCharacter(payload.characterName || payload.character_name || payload.character?.name);
       if (!selected.ok) return selected;
     }
-    if (readState().inHunt) return { ok: true, alreadyStarted: true };
+    const current = readState();
+    if (current.inHunt) return { ok: true, alreadyStarted: true };
+    if (current.training?.active) {
+      const stopped = await stopTraining();
+      if (!stopped.ok) return { ok: false, error: stopped.error || "Não foi possível encerrar o treino antes da caçada" };
+    }
     const target = hunt.spotKey || hunt.monsterKey;
     if (!target || target === "default") return { ok: false, error: "Nenhuma caçada foi selecionada" };
     const opened = await openHuntWindow();
     if (!opened.ok) return opened;
+    const huntsTab = document.querySelector('.hunt-tab[data-tab="hunts"]');
+    if (!huntsTab) return { ok: false, error: "A aba Hunts não foi encontrada" };
+    huntsTab.click();
+    const huntsReady = await waitUntil(() => [...document.querySelectorAll(".hunt-window .hunt-entry")].some(visible), 5000, 100);
+    if (!huntsReady) return { ok: false, error: "A lista de caçadas não abriu" };
     const entry = [...document.querySelectorAll(".hunt-window .hunt-entry")].find((item) => visible(item) && matchesHunt(item, target));
     if (!entry) return { ok: false, error: `Caçada ${target} não encontrada no Huntera` };
     entry.click();
