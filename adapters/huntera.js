@@ -917,12 +917,13 @@
     return closed ? { ok: true } : { ok: false, error: "O Bestiary não fechou após a sincronização" };
   }
 
-  async function configureLoot(hunt = {}) {
+  async function configureLoot(hunt = {}, accountLoot = {}) {
     await waitUntil(() => document.querySelectorAll(".hunt-window .hunt-loot-auto").length > 0, 1500);
     const controls = [...document.querySelectorAll(".hunt-window .hunt-loot-auto")].filter((control) => !control.disabled && visible(control.closest(".hunt-loot-entry")));
     if (!controls.length) return { ok: true, configured: 0, changed: 0 };
     const keys = new Set((Array.isArray(hunt.lootItemKeys) ? hunt.lootItemKeys : []).map((key) => String(key)));
     const configured = hunt.lootConfigured === true || keys.size > 0;
+    const accountConfigured = Number(accountLoot.version) >= 1 || Array.isArray(accountLoot.items);
     let changed = 0;
     for (const control of controls) {
       const entry = control.closest(".hunt-loot-entry");
@@ -930,7 +931,8 @@
       const baseKey = itemKeyFromName(name);
       const itemId = control.dataset.itemId || entry?.dataset.itemId || "";
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
-      const desired = configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
+      const policy = configuredLootPolicy(accountLoot, { itemId, name });
+      const desired = accountConfigured ? policy !== "ignore" : configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
       if (control.checked !== desired) { control.click(); changed += 1; }
     }
     return { ok: true, configured: controls.length, changed };
@@ -1404,7 +1406,7 @@
     await new Promise((resolve) => window.setTimeout(resolve, 120));
     const pull = await selectPullTier(hunt.pullTier);
     if (!pull.ok) return pull;
-    const loot = await configureLoot(hunt);
+    const loot = await configureLoot(hunt, payload.loot || {});
     if (!loot.ok) return loot;
     return { ok: true, entry, pull, loot, hunt };
   }
@@ -1530,10 +1532,11 @@
       (candidate.externalItemId != null && String(candidate.externalItemId) === externalId)
       || (candidate.itemKey && candidate.itemKey === key)
       || normalizeItemName(candidate.name) === normalizeItemName(item.name));
-    return ["warehouse", "npc", "default"].includes(entry?.policy) ? entry.policy : "default";
+    return ["warehouse", "npc", "default", "ignore"].includes(entry?.policy) ? entry.policy : "default";
   }
 
   function lootDisposition(item, quote = {}, policy = "default") {
+    if (policy === "ignore") return { destination: "ignore", reason: "política da conta: não coletar nem vender", sellPrice: null };
     if (policy === "warehouse") return { destination: "warehouse", reason: "política da conta: sempre guardar", sellPrice: null };
     if (policy === "npc") return { destination: "npc", reason: "política da conta: sempre vender no NPC", sellPrice: null };
     const sellPrices = Array.isArray(quote.sellPrices) ? quote.sellPrices.filter((value) => Number.isFinite(Number(value))).map(Number) : [];
@@ -1680,8 +1683,9 @@
     const soldIds = new Set((npcResult.soldItems || []).map((item) => String(item.itemId)));
     const npcFailed = npcTargets.filter((item) => !soldIds.has(String(item.itemId))).map((item) => ({ ...item, error: "O NPC não confirmou a venda" }));
     const failed = [...npcFailed, ...(warehouseResult.failedItems || [])];
-    const message = `${npcResult.sold} vendido(s) no NPC, ${auctionListed.length} ordem(ns) criada(s) e ${warehouseResult.stored} item(ns) guardado(s)`;
-    return { ok: failed.length === 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { error: `${failed.length} item(ns) não puderam ser guardados no armazém` } : {}) };
+    const ignored = decisions.filter((item) => item.destination === "ignore").length;
+    const message = `${npcResult.sold} vendido(s) no NPC, ${auctionListed.length} ordem(ns) criada(s), ${warehouseResult.stored} item(ns) guardado(s) e ${ignored} ignorado(s)`;
+    return { ok: failed.length === 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, ignored, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { error: `${failed.length} item(ns) não puderam ser destinados` } : {}) };
   }
 
   async function closeStore() {
