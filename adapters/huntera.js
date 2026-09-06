@@ -1523,31 +1523,104 @@
     return { ok: true, quotes };
   }
 
-  function auctionDecision(item, quote, config = {}) {
-    if (config.preserveAuctionItems === false) return { preserve: false, reason: "preservação desativada" };
-    const mode = ["buy", "sell", "both"].includes(config.auctionPriceMode) ? config.auctionPriceMode : "buy";
-    const buyThreshold = Math.max(0, Number(config.auctionBuyThresholdPercent ?? 50));
-    const sellThreshold = Math.max(0, Number(config.auctionSellThresholdPercent ?? 50));
-    const noBuyPolicy = config.auctionNoBuyOrderPolicy === "npc" ? "npc" : "preserve";
-    const buyPrice = quote.buyPrices.length ? Math.max(...quote.buyPrices) : null;
-    const sellPrice = quote.sellPrices.length ? Math.min(...quote.sellPrices) : null;
-    const buyPass = buyPrice !== null ? buyPrice >= item.npcValue * (1 + buyThreshold / 100) : noBuyPolicy === "preserve";
-    const sellPass = sellPrice !== null && sellPrice >= item.npcValue * (1 + sellThreshold / 100);
-    const preserve = mode === "sell" ? sellPass : mode === "both" ? buyPass && sellPass : buyPass;
-    if (!quote.found) {
-      const preserve = mode === "sell" ? false : noBuyPolicy === "preserve";
-      return { preserve, reason: mode === "sell" ? "item sem oferta de venda" : preserve ? "item não apareceu nos itens possuídos do leilão" : "item sem registro no leilão", buyPrice, sellPrice };
+  function configuredLootPolicy(config = {}, item = {}) {
+    const externalId = String(item.itemId || item.id || "");
+    const key = itemKeyFromName(item.name || "");
+    const entry = (Array.isArray(config.items) ? config.items : []).find((candidate) =>
+      (candidate.externalItemId != null && String(candidate.externalItemId) === externalId)
+      || (candidate.itemKey && candidate.itemKey === key)
+      || normalizeItemName(candidate.name) === normalizeItemName(item.name));
+    return ["warehouse", "npc", "default"].includes(entry?.policy) ? entry.policy : "default";
+  }
+
+  function lootDisposition(item, quote = {}, policy = "default") {
+    if (policy === "warehouse") return { destination: "warehouse", reason: "política da conta: sempre guardar", sellPrice: null };
+    if (policy === "npc") return { destination: "npc", reason: "política da conta: sempre vender no NPC", sellPrice: null };
+    const sellPrices = Array.isArray(quote.sellPrices) ? quote.sellPrices.filter((value) => Number.isFinite(Number(value))).map(Number) : [];
+    const sellPrice = sellPrices.length ? Math.min(...sellPrices) : null;
+    if (item.npcValue == null || !Number.isFinite(Number(item.npcValue))) return { destination: "warehouse", reason: "item sem preço de NPC", sellPrice };
+    if (!quote.found || sellPrice === null) return { destination: "warehouse", reason: "item sem oferta de venda no leilão", sellPrice };
+    if (sellPrice > Number(item.npcValue)) return { destination: "auction", reason: "oferta de venda maior que o NPC", sellPrice };
+    return { destination: "npc", reason: "oferta de venda igual ou menor que o NPC", sellPrice };
+  }
+
+  function inventoryLootItems() {
+    const source = [...(socketState.inventory?.slots || []), ...(socketState.inventory?.satchel || [])].filter(Boolean);
+    const grouped = new Map();
+    for (const raw of source) {
+      const itemId = raw.itemId ?? raw.item_id ?? raw.id ?? raw.typeId ?? raw.type_id;
+      const name = raw.name ?? raw.itemName ?? raw.item_name;
+      if (itemId == null || !name) continue;
+      const key = String(itemId);
+      const current = grouped.get(key) || { itemId: key, name, count: 0, npcValue: null };
+      current.count += Math.max(1, Number(raw.count ?? raw.quantity ?? raw.amount ?? 1) || 1);
+      grouped.set(key, current);
     }
-    if (mode === "buy" && buyPrice === null) return { preserve: noBuyPolicy === "preserve", reason: noBuyPolicy === "preserve" ? "sem ordem de compra" : "sem ordem de compra; vender no NPC", buyPrice, sellPrice };
-    if (mode === "sell" && sellPrice === null) return { preserve: false, reason: "sem oferta de venda", buyPrice, sellPrice };
-    if (mode === "both" && (!buyPass || !sellPass)) return { preserve: false, reason: "ambos os critérios não atingidos", buyPrice, sellPrice };
-    return { preserve, reason: preserve ? `margem de ${mode === "sell" ? sellThreshold : buyThreshold}% atingida` : "valor abaixo da margem configurada", buyPrice, sellPrice };
+    return [...grouped.values()];
+  }
+
+  function buttonMatching(root, pattern, selectors = []) {
+    for (const selector of selectors) {
+      const candidate = [...root.querySelectorAll(selector)].find((element) => visible(element) && !element.disabled);
+      if (candidate) return candidate;
+    }
+    return [...root.querySelectorAll("button")].find((button) => visible(button) && !button.disabled && pattern.test(normalizeItemName(button.textContent || button.getAttribute("aria-label"))));
+  }
+
+  async function createAuctionSellOrder(market, item) {
+    const search = market.querySelector("#market-search");
+    setSearchValue(search, item.name);
+    const ready = await waitUntil(() => [...market.querySelectorAll(".market-item")].some((entry) => entry.dataset.marketItem === item.itemId || normalizeItemName(entry.querySelector(".market-item-name")?.textContent) === normalizeItemName(item.name)), 2500);
+    if (!ready) return { ok: false, error: "Item não encontrado no leilão" };
+    const marketItem = [...market.querySelectorAll(".market-item")].find((entry) => entry.dataset.marketItem === item.itemId || normalizeItemName(entry.querySelector(".market-item-name")?.textContent) === normalizeItemName(item.name));
+    marketItem?.click();
+    await waitUntil(() => normalizeItemName(firstVisible(".market-listing-head strong")?.textContent) === normalizeItemName(item.name), 2500);
+    const create = buttonMatching(market, /criar.*(?:oferta|ordem)|vender|create.*sell|sell.*order/i, ["[data-action='create-sell-order']", ".market-create-sell", ".market-sell-button"]);
+    if (!create) return { ok: false, error: "Limite de ordens atingido ou criação indisponível" };
+    create.click();
+    const form = await waitFor(".market-order-form, .market-create-order, .trade-dialog, [role='dialog']", 2500, true);
+    if (!form) return { ok: false, error: "Formulário da ordem não abriu" };
+    const text = normalizeItemName(form.textContent);
+    if (/limite.*(?:ordem|oferta)|maximum.*(?:order|offer)/i.test(text)) return { ok: false, error: "Limite de ordens atingido" };
+    const priceInput = form.querySelector("input[name='price'], input[data-field='price'], .market-order-price input");
+    const amountInput = form.querySelector("input[name='amount'], input[name='quantity'], input[data-field='amount'], .market-order-amount input");
+    if (!priceInput) return { ok: false, error: "Campo de preço da ordem não encontrado" };
+    setSearchValue(priceInput, String(item.sellPrice));
+    if (amountInput) setSearchValue(amountInput, String(Math.max(1, item.count || 1)));
+    const submit = buttonMatching(form, /confirmar|criar.*(?:oferta|ordem)|vender|confirm|create/i, ["button[type='submit']", "[data-action='confirm']"]);
+    if (!submit) return { ok: false, error: "Botão para confirmar a ordem não encontrado" };
+    submit.click();
+    const completed = await waitUntil(() => !visible(form) || /criad|sucesso|created|success/i.test(normalizeItemName(form.textContent)), 3500, 100);
+    return completed ? { ok: true, price: item.sellPrice, count: item.count } : { ok: false, error: "O leilão não confirmou a ordem" };
+  }
+
+  async function moveItemsToWarehouse(items) {
+    if (!items.length) return { stored: 0, storedItems: [], failedItems: [] };
+    const tab = [...document.querySelectorAll(".trade-tab, [data-tab]")].find((entry) => visible(entry) && /depot|warehouse|storage|armazem|deposito/i.test(`${entry.dataset.tab || ""} ${normalizeItemName(entry.textContent)}`));
+    const nav = document.querySelector("#nav-depot, #nav-warehouse, #nav-storage");
+    (tab || nav)?.click();
+    const warehouse = await waitFor(".depot-window, .warehouse-window, .storage-window, [data-window='depot']", 3500, true);
+    if (!warehouse) return { stored: 0, storedItems: [], failedItems: items.map((item) => ({ ...item, error: "Armazém indisponível" })) };
+    const storedItems = [];
+    const failedItems = [];
+    for (const item of items) {
+      const inventoryItem = [...document.querySelectorAll(".inventory-slot[data-item-id], .backpack-slot[data-item-id], [data-container='backpack'] [data-item-id], [data-container='satchel'] [data-item-id]")].find((entry) => String(entry.dataset.itemId) === String(item.itemId) && visible(entry));
+      if (!inventoryItem) { failedItems.push({ ...item, error: "Item não encontrado na mochila" }); continue; }
+      inventoryItem.click();
+      const deposit = buttonMatching(warehouse, /guardar|depositar|store|deposit/i, ["[data-action='deposit']", ".depot-deposit", ".warehouse-deposit"]);
+      if (!deposit) { failedItems.push({ ...item, error: "Ação de depósito indisponível" }); continue; }
+      deposit.click();
+      const confirmed = await waitUntil(() => !visible(inventoryItem) || inventoryItem.dataset.itemId !== String(item.itemId), 2500, 100);
+      if (confirmed) storedItems.push({ itemId: item.itemId, name: item.name, count: item.count });
+      else failedItems.push({ ...item, error: "O armazém não confirmou o depósito" });
+    }
+    return { stored: storedItems.length, storedItems, failedItems };
   }
 
   async function sellNpcItems(shop, items) {
     let sold = 0;
     const soldItems = [];
-    for (const item of items.filter((entry) => !entry.preserve)) {
+    for (const item of items) {
       const offer = [...shop.querySelectorAll("#shop-offers .shop-offer")].find((entry) => entry.dataset.itemId === item.itemId && visible(entry));
       if (!offer) continue;
       offer.click();
@@ -1572,31 +1645,43 @@
     sellTab.click();
     await waitFor("#shop-offers .shop-offer", 3000, true);
     const npcOffers = readNpcSellOffers(shop);
-    if (!npcOffers.length) return { ok: true, sold: 0, auctionKept: 0, message: "Nenhum item disponível para venda" };
-    let decisions = npcOffers.map((item) => ({ ...item, preserve: false, reason: "preservação desativada" }));
-    let auctionChecked = 0;
-    if (config.preserveAuctionItems !== false) {
-      const auction = await readAuctionQuotes(npcOffers);
-      if (auction.ok) {
-        const quotes = new Map(auction.quotes.map((quote) => [quote.itemId, quote]));
-        decisions = npcOffers.map((item) => ({ ...item, ...auctionDecision(item, quotes.get(item.itemId) || { buyPrices: [], sellPrices: [], found: false }, config) }));
-        auctionChecked = auction.quotes.filter((quote) => quote.found).length;
-      } else {
-        decisions = npcOffers.map((item) => ({ ...item, preserve: true, reason: auction.error }));
+    const byId = new Map(inventoryLootItems().map((item) => [item.itemId, item]));
+    for (const offer of npcOffers) byId.set(offer.itemId, { ...(byId.get(offer.itemId) || {}), ...offer });
+    const ownedItems = [...byId.values()];
+    if (!ownedItems.length) return { ok: true, sold: 0, auctionListed: 0, stored: 0, message: "Nenhum item disponível para destinação" };
+    const withPolicies = ownedItems.map((item) => {
+      const configured = (config.items || []).find((entry) => String(entry.externalItemId) === String(item.itemId) || normalizeItemName(entry.name) === normalizeItemName(item.name));
+      return { ...item, npcValue: item.npcValue ?? configured?.npcValue ?? null, policy: configuredLootPolicy(config, item) };
+    });
+    const defaultItems = withPolicies.filter((item) => item.policy === "default");
+    const auction = defaultItems.length ? await readAuctionQuotes(defaultItems) : { ok: true, quotes: [] };
+    const quotes = new Map((auction.quotes || []).map((quote) => [String(quote.itemId), quote]));
+    let decisions = withPolicies.map((item) => ({ ...item, ...lootDisposition(item, auction.ok ? quotes.get(String(item.itemId)) : {}, item.policy) }));
+    const auctionListed = [];
+    const auctionFailed = [];
+    if (auction.ok) {
+      const market = firstVisible(".market-window");
+      for (const item of decisions.filter((entry) => entry.destination === "auction")) {
+        const listed = market ? await createAuctionSellOrder(market, item) : { ok: false, error: "Leilão indisponível" };
+        if (listed.ok) auctionListed.push({ itemId: item.itemId, name: item.name, count: item.count, price: listed.price });
+        else auctionFailed.push({ ...item, destination: "warehouse", reason: listed.error });
       }
-      const npcTabAfterAuction = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "npc" && visible(tab));
-      npcTabAfterAuction?.click();
-      await waitFor(".shop-window", 3000, true);
-      const sellTabAfterAuction = [...document.querySelectorAll(".shop-window .tab")].find((tab) => /vender|sell/i.test(tab.textContent || ""));
-      sellTabAfterAuction?.click();
-      await waitFor("#shop-offers .shop-offer", 3000, true);
     }
-    const result = await sellNpcItems(shop, decisions);
-    const kept = decisions.filter((item) => item.preserve);
-    const message = config.preserveAuctionItems === false
-      ? `Venda concluída: ${result.sold} item(ns)`
-      : `Leilão consultado para ${auctionChecked} item(ns); ${result.sold} vendido(s) no NPC e ${kept.length} preservado(s)`;
-    return { ok: true, ...result, auctionChecked, auctionKept: kept.length, auctionItems: kept.map(({ element, ...item }) => item), decisions: decisions.map(({ element, ...item }) => item), message };
+    decisions = decisions.filter((item) => item.destination !== "auction").concat(auctionFailed);
+    const npcTabAfterAuction = [...document.querySelectorAll(".trade-tab")].find((tab) => tab.dataset.tab === "npc" && visible(tab));
+    npcTabAfterAuction?.click();
+    await waitFor(".shop-window", 3000, true);
+    const sellTabAfterAuction = [...document.querySelectorAll(".shop-window .tab")].find((tab) => /vender|sell/i.test(tab.textContent || ""));
+    sellTabAfterAuction?.click();
+    await waitFor("#shop-offers .shop-offer", 3000, true);
+    const npcTargets = decisions.filter((item) => item.destination === "npc");
+    const npcResult = await sellNpcItems(shop, npcTargets);
+    const warehouseResult = await moveItemsToWarehouse(decisions.filter((item) => item.destination === "warehouse"));
+    const soldIds = new Set((npcResult.soldItems || []).map((item) => String(item.itemId)));
+    const npcFailed = npcTargets.filter((item) => !soldIds.has(String(item.itemId))).map((item) => ({ ...item, error: "O NPC não confirmou a venda" }));
+    const failed = [...npcFailed, ...(warehouseResult.failedItems || [])];
+    const message = `${npcResult.sold} vendido(s) no NPC, ${auctionListed.length} ordem(ns) criada(s) e ${warehouseResult.stored} item(ns) guardado(s)`;
+    return { ok: failed.length === 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { error: `${failed.length} item(ns) não puderam ser guardados no armazém` } : {}) };
   }
 
   async function closeStore() {

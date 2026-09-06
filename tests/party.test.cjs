@@ -25,7 +25,7 @@ function adapter(cards = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, lootDisposition, configuredLootPolicy,
       configureFixture(fixture) {
         readState = fixture.readState;
         characterSelectionVisible = () => false;
@@ -68,6 +68,33 @@ test("recognizes the game's Portuguese cost-sharing title", () => {
   const api = adapter([card]);
   assert.equal(api.findInviteCard("costs", "IACosta"), card);
   assert.equal(api.findInviteCard("party", "IACosta"), null);
+});
+
+test("account loot policies override the default market decision", () => {
+  const api = adapter();
+  const config = { items: [
+    { externalItemId: "10", name: "Dragon Ham", policy: "warehouse" },
+    { externalItemId: "11", name: "Halberd", policy: "npc" }
+  ] };
+  assert.equal(api.configuredLootPolicy(config, { itemId: "10", name: "Dragon Ham" }), "warehouse");
+  assert.equal(api.configuredLootPolicy(config, { itemId: "11", name: "Halberd" }), "npc");
+  assert.equal(api.configuredLootPolicy(config, { itemId: "12", name: "Plate Armor" }), "default");
+});
+
+test("default loot uses the lowest sell offer and only auctions above NPC", () => {
+  const api = adapter();
+  const item = { itemId: "10", name: "Dragon Ham", npcValue: 100 };
+  assert.deepEqual({ ...api.lootDisposition(item, { found: true, sellPrices: [140, 120] }, "default") }, { destination: "auction", reason: "oferta de venda maior que o NPC", sellPrice: 120 });
+  assert.equal(api.lootDisposition(item, { found: true, sellPrices: [100] }, "default").destination, "npc");
+  assert.equal(api.lootDisposition(item, { found: true, sellPrices: [80] }, "default").destination, "npc");
+});
+
+test("default loot falls back to warehouse without a usable quote or NPC price", () => {
+  const api = adapter();
+  assert.equal(api.lootDisposition({ npcValue: 100 }, { found: false, sellPrices: [] }, "default").destination, "warehouse");
+  assert.equal(api.lootDisposition({ npcValue: null }, { found: true, sellPrices: [200] }, "default").destination, "warehouse");
+  assert.equal(api.lootDisposition({ npcValue: 100 }, { found: true, sellPrices: [200] }, "warehouse").destination, "warehouse");
+  assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "npc").destination, "npc");
 });
 
 test("cancelling a pending invitation aborts the wait and allows the next operation", async () => {
