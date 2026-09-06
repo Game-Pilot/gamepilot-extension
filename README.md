@@ -18,6 +18,6 @@ Use somente um perfil de teste do Chrome. O token e as permissões são provisó
 
 ## Usar com a API publicada
 
-Esta versão aponta para `https://gamepilot-api-production.up.railway.app`. Depois de atualizar os arquivos da extensão, abra `chrome://extensions`, clique em **Reload** e faça o vínculo novamente se o dispositivo anterior estiver revogado.
+Esta versão aponta para `https://gamepilot-api.iancosta.dev`. Depois de atualizar os arquivos da extensão, abra `chrome://extensions`, clique em **Reload** e faça o vínculo novamente se o dispositivo anterior estiver revogado.
 
 Para desenvolvimento local, altere a constante `API` no `service-worker.js` para `http://127.0.0.1:4317` e mantenha a permissão local no `manifest.json`.

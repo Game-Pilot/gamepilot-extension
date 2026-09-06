@@ -6,6 +6,10 @@ let automationActions = [];
 let automationPayload = {};
 let automationBusy = false;
 let commandBusy = false;
+let activeCommand = Promise.resolve();
+let interrupting = false;
+let stateRequestPending = false;
+let lastOperationError = null;
 let lastReturnAt = 0;
 let lastTrainingAttemptAt = 0;
 const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
@@ -39,7 +43,7 @@ const connectionKey = stableConnectionKey();
 const AUTOMATION_KEY = "gamepilot.automation";
 function persistAutomationState() {
   try {
-    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode }));
+    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode, lastOperationError }));
   } catch { /* storage unavailable */ }
 }
 function restoreAutomationState() {
@@ -51,6 +55,7 @@ function restoreAutomationState() {
     automationActions = Array.isArray(saved.automationActions) ? saved.automationActions : [];
     automationPayload = saved.automationPayload && typeof saved.automationPayload === "object" ? saved.automationPayload : {};
     if (saved.mode) mode = saved.mode;
+    lastOperationError = saved.lastOperationError || null;
   } catch { /* ignore corrupt state */ }
 }
 
@@ -89,7 +94,7 @@ async function handleCommand(command, commandId, payload = {}) {
       result = await adapter?.prepareGroup?.(payload) || result;
       if (result.ok) {
         mode = "idle";
-        await sendEvent({ type: "group.party-ready", message: "Party preparada no Huntera", details: { payload, party: result.party } });
+        await sendEvent({ type: payload.group?.phase === "initialize" ? "group.initialized" : "group.party-ready", message: payload.group?.phase === "initialize" ? "Personagem disponível para preparar a party" : "Party preparada no Huntera", details: { payload, party: result.party } });
       }
     } else if (command === "start" && payload.operation === "training") {
       automationEnabled = false;
@@ -149,6 +154,10 @@ async function handleCommand(command, commandId, payload = {}) {
         await sendEvent({ type: "training.stopped", message: result.alreadyStopped ? "Treino já estava parado" : "Treino online encerrado", details: { payload } });
       }
     } else if (command === "stop" || command === "return-town") {
+      if (adapter?.readState?.().training?.active) {
+        const stopped = await adapter.stopTraining();
+        if (!stopped.ok) throw new Error(stopped.error);
+      }
       automationEnabled = false; automationActions = []; automationPayload = {}; lastReturnAt = 0; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
     } else if (command === "open-store") {
@@ -221,7 +230,7 @@ async function handleCommand(command, commandId, payload = {}) {
   } catch (error) {
     result = { ok: false, error: error.message || "Falha inesperada" };
   }
-  if (!result.ok) { mode = "error"; await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error } }); }
+  if (!result.ok) { lastOperationError = { command, message: result.error, at: new Date().toISOString() }; mode = "error"; await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error } }); }
   else if (command === "stop") mode = "idle";
   else if (mode === "error") mode = adapter?.readState?.().inHunt ? "hunting" : "idle"; // a later success clears a stale error banner
   showBanner(result.ok ? `${command} concluído` : result.error);
@@ -316,6 +325,7 @@ function sendState() {
     if (gameState.shopOpen) mode = "selling";
     else if (gameState.inHunt) mode = "hunting";
     else if (gameState.training?.active) mode = "training";
+    else if (mode === "error" && gameState.detected && gameState.inTown) mode = "idle";
     else if (["selling", "hunting", "returning", "starting", "training"].includes(mode)) mode = "idle";
   }
   if (gameState.characterSelection && automationEnabled) {
@@ -331,18 +341,33 @@ function sendState() {
   }
   void runAutoTrainingCycle(gameState);
   void runAutomationCycle(gameState);
-  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null } };
-  // Only ask the API to dispatch a command when nothing is running. A command
-  // is marked "dispatched" server-side the moment it is handed out, so pulling
-  // one while busy would either run two commands concurrently or strand the
-  // command (dispatched but never executed). State keeps flowing for liveness.
+  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, lastError: lastOperationError } };
+  // Busy tabs still ask for stop/return interrupts; the worker requests only
+  // those commands. A normal command must remain queued until we are idle.
   const wantsCommand = !commandBusy && !automationBusy;
+  if (stateRequestPending || interrupting) return;
+  stateRequestPending = true;
   chrome.runtime.sendMessage({ type: "page-state", wantsCommand, state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState: reportedGameState } }, (response) => {
+    stateRequestPending = false;
     if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
     if (response.command) {
       commandBusy = true;
-      handleCommand(response.command, response.commandId, response.payload).finally(() => { commandBusy = false; });
+      const interrupt = ["stop", "return-town"].includes(response.command);
+      if (interrupt) {
+        interrupting = true;
+        automationEnabled = false;
+        globalThis.GamePilotAdapters?.huntera?.cancelPending?.();
+      }
+      const previous = activeCommand;
+      activeCommand = (async () => {
+        await previous.catch(() => {});
+        // Automation may be unwinding a cancelled adapter wait.
+        while (automationBusy) await new Promise((resolve) => setTimeout(resolve, 50));
+        commandBusy = true;
+        try { await handleCommand(response.command, response.commandId, response.payload); }
+        finally { commandBusy = false; interrupting = false; }
+      })().catch((error) => { showBanner(error.message || "Falha ao executar comando"); });
     } else {
       showBanner(`conectado · ${mode}`);
     }

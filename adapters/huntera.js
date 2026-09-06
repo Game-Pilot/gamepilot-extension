@@ -352,10 +352,15 @@
     };
   }
 
+  let cancellationRevision = 0;
+  function cancelPending() { cancellationRevision += 1; }
+
   function waitFor(selector, timeout = 5000, expectedVisible = true) {
-    return new Promise((resolve) => {
+    const revision = cancellationRevision;
+    return new Promise((resolve, reject) => {
       const startedAt = Date.now();
       const check = () => {
+        if (revision !== cancellationRevision) return reject(new Error("Operação cancelada pelo usuário"));
         const element = document.querySelector(selector);
         if (expectedVisible === visible(element)) return resolve(element);
         if (Date.now() - startedAt >= timeout) return resolve(null);
@@ -366,9 +371,11 @@
   }
 
   function waitUntil(predicate, timeout = 5000, interval = 80) {
-    return new Promise((resolve) => {
+    const revision = cancellationRevision;
+    return new Promise((resolve, reject) => {
       const startedAt = Date.now();
       const check = () => {
+        if (revision !== cancellationRevision) return reject(new Error("Operação cancelada pelo usuário"));
         let matched = false;
         try { matched = Boolean(predicate()); } catch { matched = false; }
         if (matched) return resolve(true);
@@ -420,15 +427,22 @@
     return [...document.querySelectorAll(".party-invite")].filter(visible);
   }
 
-  function findInviteCard(kind) {
+  function findInviteCard(kind, senderName = null) {
     return inviteCards().find((card) => {
-      const text = normalizeItemName(`${card.getAttribute("aria-label") || ""} ${card.textContent || ""}`);
+      // Names and member descriptions are not invitation types (IACosta contains "cost").
+      const text = normalizeItemName(card.querySelector(".invite-title")?.textContent || card.getAttribute("aria-label") || "");
+      if (senderName) {
+        const message = normalizeItemName(card.querySelector(".invite-msg")?.textContent || "");
+        const sender = normalizeItemName(senderName);
+        const actualSender = message.match(/^(.+?)\s+(?:invites|convida|convidou|proposes|propoe)\b/)?.[1];
+        if (actualSender !== sender) return false;
+      }
       const huntIcon = Boolean(card.querySelector('img[src*="/assets/nav/hunt.png"]'));
       if (kind === "team") return huntIcon || /team hunt invitation|convite.*cacada.*(?:grupo|time)/.test(text);
       if (kind === "follow") return /follow party leader|seguir.*(?:lider|puxador)/.test(text);
-      if (kind === "costs") return /hunt cost sharing|rateio.*cust|compartilh.*cust|custos.*cacada/.test(text);
+      if (kind === "costs") return /hunt cost sharing|rateio da hunt|rateio.*cust|compartilh.*cust|custos.*cacada/.test(text);
       if (kind === "experience-warning") return /shared experience warning|experiencia compartilhada|compartilhar exp/.test(text);
-      if (kind === "party") return !huntIcon && !/follow|seguir|cost|custo|rateio|experien/.test(text) && /party invitation|convite.*(?:party|grupo)/.test(text);
+      if (kind === "party") return !huntIcon && /^(party invitation|convite.*(?:party|grupo))$/.test(text);
       return false;
     }) || null;
   }
@@ -492,7 +506,7 @@
     }, timeout, 200);
   }
 
-  async function inviteFriendToParty(characterName, expectedNames) {
+  async function inviteFriendToParty(characterName, expectedNames, attempt = 0) {
     const currentNames = readPartyState().members.map((member) => normalizeItemName(member.name));
     if (currentNames.includes(normalizeItemName(characterName))) return { ok: true, alreadyJoined: true };
     const friend = await ensureFriend(characterName);
@@ -510,7 +524,8 @@
       clickInviteAction(findInviteCard("experience-warning"), false);
       return { ok: false, error: `${characterName} causaria penalidade de experiência compartilhada` };
     }
-    const joined = await waitForPartyMembers(expectedNames, 60000);
+    const joined = await waitForPartyMembers(expectedNames, 15000);
+    if (!joined && attempt < 1) return inviteFriendToParty(characterName, expectedNames, attempt + 1);
     return joined ? { ok: true } : { ok: false, error: `${characterName} não aceitou o convite da party a tempo` };
   }
 
@@ -533,7 +548,7 @@
     return changed ? { ok: true, value } : { ok: false, error: "O Huntera não confirmou a estratégia de alvo da party" };
   }
 
-  async function enableSharedCosts(role) {
+  async function enableSharedCosts(role, leaderName) {
     const opened = await openPartyWindow();
     if (!opened.ok) return opened;
     if (readPartyState().sharedCosts) return { ok: true, alreadyEnabled: true };
@@ -542,8 +557,8 @@
       if (!offer || offer.disabled) return { ok: false, error: "O rateio de custos não pode ser iniciado agora" };
       offer.click();
     } else {
-      const prompted = await waitUntil(() => Boolean(findInviteCard("costs")), 60000, 150);
-      if (!prompted || !clickInviteAction(findInviteCard("costs"), true)) return { ok: false, error: "O convite para ratear os custos não chegou" };
+      const prompted = await waitUntil(() => Boolean(findInviteCard("costs", leaderName)), 60000, 150);
+      if (!prompted || !clickInviteAction(findInviteCard("costs", leaderName), true)) return { ok: false, error: "O convite para ratear os custos não chegou" };
     }
     const active = await waitUntil(() => readPartyState().sharedCosts, 60000, 200);
     return active ? { ok: true } : { ok: false, error: "O rateio de custos não foi aceito por todos a tempo" };
@@ -566,6 +581,7 @@
     if (members.length < 2 || members.length > 4 || !leader?.name) return { ok: false, error: "A party precisa de um puxador e de 2 a 4 personagens" };
     const expectedNames = members.map((member) => member.name);
     const role = group.role === "leader" ? "leader" : "follower";
+    if (group.phase === "initialize") return { ok: true, party: readPartyState() };
     if (role === "leader") {
       const existing = readPartyState().members.map((member) => normalizeItemName(member.name));
       const expected = expectedNames.map(normalizeItemName);
@@ -578,15 +594,15 @@
     } else {
       const inParty = readPartyState().members.some((member) => normalizeItemName(member.name) === normalizeItemName(leader.name));
       if (!inParty) {
-        const received = await waitUntil(() => Boolean(findInviteCard("party")), 60000, 150);
-        if (!received || !clickInviteAction(findInviteCard("party"), true)) return { ok: false, error: `O convite de ${leader.name} não chegou` };
+        const received = await waitUntil(() => Boolean(findInviteCard("party", leader.name)), 120000, 150);
+        if (!received || !clickInviteAction(findInviteCard("party", leader.name), true)) return { ok: false, error: `O convite de ${leader.name} não chegou` };
       }
       if (!await waitForPartyMembers(expectedNames, 60000)) return { ok: false, error: "A party não reuniu todos os participantes a tempo" };
     }
     const targeted = await setPartyTarget(role, leader.name);
     if (!targeted.ok) return targeted;
     if (group.rules?.shareCosts !== false) {
-      const costs = await enableSharedCosts(role);
+      const costs = await enableSharedCosts(role, leader.name);
       if (!costs.ok) return costs;
     }
     return { ok: true, party: readPartyState() };
@@ -1592,5 +1608,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();

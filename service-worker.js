@@ -1,6 +1,6 @@
-// The unpacked production build talks to the Railway API. Local development
+// The unpacked production build talks to the GamePilot API. Local development
 // can temporarily point this URL to http://127.0.0.1:4317.
-const API = "https://gamepilot-api-production.up.railway.app";
+const API = "https://gamepilot-api.iancosta.dev";
 const DEVICE_TOKEN_KEY = "gamepilot.deviceToken";
 const INSTALLATION_ID_KEY = "gamepilot.installationId";
 
@@ -103,14 +103,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const state = { ...message.state, tabId: sender.tab?.id };
     await api("/api/v1/agent/state", { method: "POST", body: JSON.stringify(state) });
-    // The content script asks for a command only when it is idle; while a
-    // command runs it keeps posting state but sets wantsCommand=false so the
-    // API does not dispatch (and strand) a second command.
-    if (message.wantsCommand === false) {
-      sendResponse({ ok: true, command: null, commandId: null, payload: {} });
-      return;
-    }
-    const query = state.connectionKey ? `?connectionKey=${encodeURIComponent(state.connectionKey)}` : "";
+    // Busy tabs only receive stop/return interrupts. Normal commands remain
+    // queued until the content script finishes its current operation.
+    const query = `?connectionKey=${encodeURIComponent(state.connectionKey || "")}${message.wantsCommand === false ? "&interruptOnly=true" : ""}`;
     const command = await api(`/api/v1/agent/commands${query}`);
     sendResponse({
       ok: true,
