@@ -9,12 +9,16 @@ let commandBusy = false;
 let activeCommand = Promise.resolve();
 let interrupting = false;
 let stateRequestPending = false;
+let runtimeMessagingAvailable = true;
+let stateIntervalId = null;
 let lastOperationError = null;
 let lastReturnAt = 0;
 let lastTrainingAttemptAt = 0;
 const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
 const TRAINING_RETRY_MS = 30000;
+const RECOVERY_CONFIRM_MS = 5000;
 let recoveryNoticeSent = false;
+let characterSelectionSince = 0;
 let hunteraPageTitle = document.title;
 let characterPageTitle = null;
 
@@ -90,14 +94,54 @@ function restoreAutomationState() {
 function showBanner(text) {
   if (!banner) {
     banner = document.createElement("div");
+    banner.setAttribute("data-gamepilot-banner", "");
     banner.style.cssText = "position:fixed;z-index:2147483647;right:12px;bottom:12px;padding:8px 12px;border-radius:8px;background:#172033;color:#d8f3ff;font:12px system-ui;box-shadow:0 4px 16px #0006";
     document.documentElement.appendChild(banner);
   }
   banner.textContent = `GamePilot · ${text}`;
 }
 
+function isInvalidatedExtensionContext(error) {
+  return /extension context invalidated/i.test(error?.message || "");
+}
+
+function stopRuntimeMessaging() {
+  runtimeMessagingAvailable = false;
+  stateRequestPending = false;
+  if (stateIntervalId !== null) {
+    clearInterval(stateIntervalId);
+    stateIntervalId = null;
+  }
+}
+
+// Reloading an unpacked extension invalidates the old content-script context
+// before Chrome reloads the game tab. In that short window sendMessage throws
+// synchronously, so checking runtime.lastError only inside the callback is not
+// enough. Centralize the guard so stale timers and socket events become no-ops.
+function sendRuntimeMessage(message, callback) {
+  if (!runtimeMessagingAvailable) return false;
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (isInvalidatedExtensionContext(error)) stopRuntimeMessaging();
+      callback?.(response, error || null);
+    });
+    return true;
+  } catch (error) {
+    if (isInvalidatedExtensionContext(error)) stopRuntimeMessaging();
+    callback?.(undefined, error);
+    return false;
+  }
+}
+
 function sendEvent(event) {
-  return new Promise((resolve) => chrome.runtime.sendMessage({ type: "agent-event", connectionKey, event }, (response) => resolve(response)));
+  return new Promise((resolve) => {
+    const sent = sendRuntimeMessage(
+      { type: "agent-event", connectionKey, event },
+      (response, error) => resolve(response || { ok: false, error: error?.message || "Extensão indisponível" })
+    );
+    if (!sent) resolve({ ok: false, error: "Extensão indisponível" });
+  });
 }
 
 async function reportCommand(command, commandId, status = "completed", errorMessage = null) {
@@ -399,6 +443,7 @@ function operationReport(gameState) {
 }
 
 function sendState() {
+  if (!runtimeMessagingAvailable) return;
   lastStatePostAt = Date.now();
   persistAutomationState();
   const adapter = globalThis.GamePilotAdapters?.huntera;
@@ -414,14 +459,20 @@ function sendState() {
     else if (mode === "error" && gameState.detected && gameState.inTown) mode = "idle";
     else if (["selling", "hunting", "returning", "starting", "training"].includes(mode)) mode = "idle";
   }
-  if (gameState.characterSelection && automationEnabled) {
+  // During an F5 the SPA can briefly expose its character-selection shell before
+  // restoring the active hunt. Only recover when that state remains stable and
+  // there is no evidence of a loaded character or hunt.
+  const recoveryCandidate = gameState.characterSelection && !gameState.detected && !gameState.inHunt;
+  if (recoveryCandidate && !characterSelectionSince) characterSelectionSince = Date.now();
+  if (!recoveryCandidate) characterSelectionSince = 0;
+  if (recoveryCandidate && automationEnabled && Date.now() - characterSelectionSince >= RECOVERY_CONFIRM_MS) {
     if (!recoveryNoticeSent) {
       recoveryNoticeSent = true;
       mode = "reconnecting";
       showBanner("conexão perdida; selecionando personagem");
       void sendEvent({ type: "connection.lost", message: "Huntera voltou para a tela de personagens", details: { character: automationPayload.characterName || automationPayload.character?.name || null } });
     }
-  } else if (gameState.detected && recoveryNoticeSent) {
+  } else if ((gameState.detected || gameState.inHunt) && recoveryNoticeSent) {
     recoveryNoticeSent = false;
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
@@ -433,9 +484,10 @@ function sendState() {
   const wantsCommand = !commandBusy && !automationBusy;
   if (stateRequestPending || interrupting) return;
   stateRequestPending = true;
-  chrome.runtime.sendMessage({ type: "page-state", wantsCommand, state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState: reportedGameState } }, (response) => {
+  sendRuntimeMessage({ type: "page-state", wantsCommand, state: { url: location.href, title: document.title, observedAt: new Date().toISOString(), mode, gameKey: "huntera", connectionKey, gameState: reportedGameState } }, (response, runtimeError) => {
     stateRequestPending = false;
-    if (chrome.runtime.lastError) return showBanner("extensão conectada; API offline");
+    if (isInvalidatedExtensionContext(runtimeError)) return;
+    if (runtimeError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
     if (response.command) {
       commandBusy = true;
@@ -464,7 +516,7 @@ function sendState() {
 // tab closes, instead of waiting for its last_seen_at to go stale. The server
 // staleness sweep is the real guarantee; this just makes the common case fast.
 window.addEventListener("pagehide", () => {
-  try { chrome.runtime.sendMessage({ type: "agent-disconnect", connectionKey }); } catch { /* worker may be gone */ }
+  sendRuntimeMessage({ type: "agent-disconnect", connectionKey });
 });
 
 // The 3s timer below is throttled to ~1/min by Chrome while the tab is in the
@@ -482,4 +534,4 @@ window.addEventListener("message", (event) => {
 restoreAutomationState();
 showBanner("extensão carregada");
 sendState();
-setInterval(sendState, 3000);
+if (runtimeMessagingAvailable) stateIntervalId = setInterval(sendState, 3000);

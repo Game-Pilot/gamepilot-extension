@@ -655,7 +655,12 @@
       "[data-page=\"characters\"]"
     ];
     if (explicit.some((selector) => [...document.querySelectorAll(selector)].some(visible))) return true;
-    const text = document.body?.innerText?.replace(/\s+/g, " ") || "";
+    // Text is only a fallback for Huntera variants without a stable selection
+    // container. Ignore GamePilot's own status banner, whose recovery message
+    // contains "selecionando personagem" and would otherwise detect itself.
+    const bannerText = document.querySelector("[data-gamepilot-banner]")?.textContent?.replace(/\s+/g, " ").trim() || "";
+    const bodyText = document.body?.innerText?.replace(/\s+/g, " ") || "";
+    const text = bannerText ? bodyText.replace(bannerText, " ") : bodyText;
     return /(?:escolha|selecion(?:e|ar)|select|choose|pick)\s+(?:(?:um|a|seu|sua|your)\s+)?(?:personagem|character)/i.test(text)
       || /(?:personagens|characters)\s+(?:dispon[ií]veis|available)/i.test(text);
   }
@@ -1072,6 +1077,41 @@
       .filter((control) => !control.disabled && visible(control.closest(".hunt-loot-entry, .auto-loot-entry, [data-loot-item]")));
   }
 
+  function lootControlItem(control) {
+    const entry = control.closest(".hunt-loot-entry, .auto-loot-entry, [data-loot-item]");
+    const label = entry?.querySelector(".hunt-loot-name, .auto-loot-name, [data-item-name], label");
+    return {
+      entry,
+      itemId: control.dataset.itemId || entry?.dataset.itemId || control.value || "",
+      name: label?.textContent?.trim() || control.dataset.itemName || entry?.dataset.itemName || ""
+    };
+  }
+
+  function lootControlIdentity(control) {
+    const { itemId, name } = lootControlItem(control);
+    return itemId ? `id:${itemId}` : `name:${itemKeyFromName(name)}`;
+  }
+
+  function setLootControlChecked(control, desired) {
+    if (control.checked === desired) return true;
+    control.click();
+    if (control.checked === desired) return true;
+
+    // Some Huntera screens wrap the checkbox in controlled UI state. Use the
+    // native setter and emit both events so the game receives the same update
+    // as a manual checkbox interaction instead of reporting a false success.
+    const setter = typeof HTMLInputElement === "undefined"
+      ? null
+      : Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")?.set;
+    if (setter) setter.call(control, desired);
+    else control.checked = desired;
+    if (typeof Event !== "undefined") {
+      control.dispatchEvent?.(new Event("input", { bubbles: true }));
+      control.dispatchEvent?.(new Event("change", { bubbles: true }));
+    }
+    return control.checked === desired;
+  }
+
   async function revealLootControls() {
     if (availableLootControls().length) return true;
     const direct = document.querySelector("#nav-auto-loot, [data-page='auto-loot'], [data-tab='loot']");
@@ -1090,15 +1130,27 @@
     const configured = hunt.lootConfigured === true || keys.size > 0;
     const accountConfigured = Number(accountLoot.version) >= 1 || Array.isArray(accountLoot.items);
     let changed = 0;
+    const expected = [];
     for (const control of controls) {
-      const entry = control.closest(".hunt-loot-entry, .auto-loot-entry, [data-loot-item]");
-      const name = entry?.querySelector(".hunt-loot-name, .auto-loot-name, [data-item-name]")?.textContent?.trim() || entry?.dataset.itemName || "";
+      const { itemId, name } = lootControlItem(control);
       const baseKey = itemKeyFromName(name);
-      const itemId = control.dataset.itemId || entry?.dataset.itemId || "";
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
       const policy = configuredLootPolicy(accountLoot, { itemId, name });
       const desired = accountConfigured ? policy !== "ignore" : configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
-      if (control.checked !== desired) { control.click(); changed += 1; }
+      expected.push({ identity: lootControlIdentity(control), desired, name: name || String(itemId) || "item desconhecido" });
+      if (control.checked !== desired && setLootControlChecked(control, desired)) changed += 1;
+    }
+    // Give controlled components time to rerender, then confirm against the
+    // current DOM rather than stale checkbox references.
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    const confirmed = await waitUntil(() => {
+      const current = new Map(availableLootControls().map((control) => [lootControlIdentity(control), control]));
+      return expected.every(({ identity, desired }) => current.get(identity)?.checked === desired);
+    }, 1000, 50);
+    if (!confirmed) {
+      const current = new Map(availableLootControls().map((control) => [lootControlIdentity(control), control]));
+      const failed = expected.filter(({ identity, desired }) => current.get(identity)?.checked !== desired).map(({ name }) => name);
+      return { ok: false, error: `O Huntera não confirmou o auto-loot de: ${failed.join(", ")}`, configured: controls.length, changed, failed };
     }
     return { ok: true, configured: controls.length, changed };
   }

@@ -33,7 +33,12 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases,
+      configureDocument(fixture) {
+        document.body = fixture.body || null;
+        document.querySelector = fixture.querySelector || (() => null);
+        document.querySelectorAll = fixture.querySelectorAll || (() => []);
+      },
       configureFixture(fixture) {
         readState = fixture.readState;
         characterSelectionVisible = () => false;
@@ -139,6 +144,22 @@ test("does not use a partial wire-9 payload as a complete sync", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(api.socketBestiarySnapshot())), []);
 });
 
+test("does not mistake GamePilot's recovery banner for character selection", () => {
+  const api = adapter();
+  const banner = { textContent: "GamePilot · conexão perdida; selecionando personagem" };
+  api.configureDocument({
+    body: { innerText: banner.textContent },
+    querySelector: (selector) => selector === "[data-gamepilot-banner]" ? banner : null
+  });
+  assert.equal(api.characterSelectionVisible(), false);
+});
+
+test("still recognizes genuine character-selection text", () => {
+  const api = adapter();
+  api.configureDocument({ body: { innerText: "Escolha seu personagem para continuar" } });
+  assert.equal(api.characterSelectionVisible(), true);
+});
+
 for (const title of ["Party invitation", "Convite de party", "Convite para o grupo"]) {
   test(`recognizes ${title} with IACosta as sender and member`, () => {
     const card = invitation(title, "IACosta");
@@ -180,11 +201,12 @@ test("account loot policies override the default market decision", () => {
 });
 
 test("ignore policy disables collection while other account policies enable it", async () => {
-  function lootControl(itemId, name, checked) {
-    const entry = { hidden: false, dataset: { itemId }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: name }) };
-    return { disabled: false, checked, dataset: { itemId }, closest: () => entry, click() { this.checked = !this.checked; } };
+  function lootControl(itemId, name, checked, { useValue = false, clickChangesState = true } = {}) {
+    const entry = { hidden: false, dataset: { itemId: useValue ? "" : itemId }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: name }) };
+    return { disabled: false, checked, value: useValue ? itemId : "", dataset: { itemId: useValue ? "" : itemId }, closest: () => entry,
+      click() { if (clickChangesState) this.checked = !this.checked; } };
   }
-  const ignored = lootControl("10", "Dragon Ham", true);
+  const ignored = lootControl("10", "Dragon Ham", true, { useValue: true, clickChangesState: false });
   const kept = lootControl("11", "Halberd", false);
   const api = adapter([], [ignored, kept]);
   const result = await api.configureLoot({}, { version: 1, items: [
@@ -194,6 +216,18 @@ test("ignore policy disables collection while other account policies enable it",
   assert.equal(result.changed, 2);
   assert.equal(ignored.checked, false);
   assert.equal(kept.checked, true);
+});
+
+test("loot synchronization fails when Huntera reverts an ignored item's checkbox", async () => {
+  const entry = { hidden: false, dataset: { itemId: "10" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
+  const ignored = { disabled: false, checked: true, dataset: { itemId: "10" }, closest: () => entry,
+    click() { this.checked = false; setTimeout(() => { this.checked = true; }, 10); } };
+  const api = adapter([], [ignored]);
+  const result = await api.configureLoot({}, { version: 1, items: [
+    { externalItemId: "10", name: "Dragon Ham", policy: "ignore" }
+  ] });
+  assert.equal(result.ok, false);
+  assert.deepEqual([...result.failed], ["Dragon Ham"]);
 });
 
 test("default loot uses the lowest sell offer and only auctions above NPC", () => {
