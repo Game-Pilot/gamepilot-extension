@@ -331,7 +331,15 @@ async function handleCommand(command, commandId, payload = {}) {
   } catch (error) {
     result = { ok: false, error: error.message || "Falha inesperada" };
   }
-  if (!result.ok) { lastOperationError = { command, message: result.error, at: new Date().toISOString() }; mode = "error"; await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error } }); }
+  if (!result.ok) {
+    // A failed start must not leave the tab armed as if a hunt were running.
+    // Besides misreporting the operation, that stale flag blocks safe local
+    // extension reloads and makes every manual retry look like a start loop.
+    if (["start", "start-hunt", "bestiary-next"].includes(command)) automationEnabled = false;
+    lastOperationError = { command, message: result.error, at: new Date().toISOString() };
+    mode = "error";
+    await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error } });
+  }
   else if (command === "stop") mode = "idle";
   else if (mode === "error") mode = adapter?.readState?.().inHunt ? "hunting" : "idle"; // a later success clears a stale error banner
   showBanner(result.ok ? `${command} concluído` : result.error);
