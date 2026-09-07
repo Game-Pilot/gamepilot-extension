@@ -1227,6 +1227,24 @@
     return control.checked === desired;
   }
 
+  function notifyLootControlChanged(control) {
+    if (typeof Event === "undefined") return false;
+    control.dispatchEvent?.(new Event("input", { bubbles: true }));
+    control.dispatchEvent?.(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  function sendAutoLootState(disabledItemIds) {
+    const requestId = globalThis.crypto?.randomUUID?.() || `loot-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    window.postMessage({
+      source: "gamepilot-huntera-content",
+      type: "socket-command",
+      requestId,
+      command: "set-auto-loot",
+      payload: { disabledItemIds: [...disabledItemIds] }
+    }, "*");
+  }
+
   async function revealLootControls() {
     if (availableLootControls().length) return true;
     const direct = document.querySelector("#nav-auto-loot, [data-page='auto-loot'], [data-tab='loot']");
@@ -1245,6 +1263,8 @@
     const configured = hunt.lootConfigured === true || keys.size > 0;
     const accountConfigured = Number(accountLoot.version) >= 1 || Array.isArray(accountLoot.items);
     const serverStateAvailable = socketState.autoLootDisabledItemIds instanceof Set;
+    const desiredDisabledItemIds = serverStateAvailable ? new Set(socketState.autoLootDisabledItemIds) : null;
+    let serverStateChanged = false;
     let changed = 0;
     const expected = [];
     for (const control of controls) {
@@ -1253,9 +1273,19 @@
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
       const policy = configuredLootPolicy(accountLoot, { itemId, name });
       const desired = accountConfigured ? policy !== "ignore" : configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
-      expected.push({ identity: lootControlIdentity(control), itemId: firstNumber(itemId), desired, name: name || String(itemId) || "item desconhecido" });
+      const numericItemId = firstNumber(itemId);
+      const serverMismatch = serverStateAvailable && numericItemId !== null
+        && socketState.autoLootDisabledItemIds.has(numericItemId) !== !desired;
+      if (desiredDisabledItemIds && numericItemId !== null) {
+        if (desired) desiredDisabledItemIds.delete(numericItemId);
+        else desiredDisabledItemIds.add(numericItemId);
+      }
+      if (serverMismatch) serverStateChanged = true;
+      expected.push({ identity: lootControlIdentity(control), itemId: numericItemId, desired, name: name || String(itemId) || "item desconhecido" });
       if (control.checked !== desired && setLootControlChecked(control, desired)) changed += 1;
+      else if (serverMismatch && notifyLootControlChanged(control)) changed += 1;
     }
+    if (serverStateChanged) sendAutoLootState(desiredDisabledItemIds);
     // The checkbox changes synchronously, but Huntera persists auto-loot over
     // the game socket. Starting before auto-loot-update arrives can use the
     // previous server-side list even though the UI already looks correct.
