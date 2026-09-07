@@ -179,7 +179,21 @@ async function handleCommand(command, commandId, payload = {}) {
   const adapter = globalThis.GamePilotAdapters?.huntera;
   let result = { ok: false, error: "Adaptador Huntera não carregado" };
   try {
-    if (command === "prepare-group") {
+    const pendingBar = adapter?.readCombatBarJournal?.();
+    if (pendingBar && pendingBar.status !== "restored" && ["start", "start-hunt", "configure-actions", "bestiary-next", "prepare-group"].includes(command)) throw new Error("Restaure o teste de barra pendente antes de iniciar outra operação");
+    if (["start", "start-hunt", "configure-actions", "bestiary-next", "combat-bar-test", "combat-bar-restore"].includes(command)) {
+      const state = adapter?.readState?.();
+      const expected = String(payload.characterName || payload.character_name || payload.character?.name || "").trim();
+      const actual = String(state?.character?.name || "").trim();
+      if (!expected || (actual && actual !== expected)) throw new Error("Comando não corresponde ao personagem conectado");
+    }
+    if (["combat-bar-test", "combat-bar-restore"].includes(command)) {
+      if (automationEnabled || automationBusy) throw new Error("Pare a automação antes do teste de barra");
+      showBanner(command === "combat-bar-test" ? "testando alteração e restauração da barra" : "restaurando backup da barra");
+      result = await adapter?.combatBarExperiment?.(payload.characterName, command === "combat-bar-restore", payload.characterId) || result;
+      await sendEvent({ type: "combat.bar-test", message: result.ok ? "Barra original restaurada e confirmada pelo servidor" : result.error,
+        details: { commandId, ok: result.ok, journal: result.journal || null } });
+    } else if (command === "prepare-group") {
       automationEnabled = false;
       mode = "preparing";
       showBanner(payload.group?.role === "leader" ? "criando party e enviando convites" : "aguardando convite da party");
@@ -373,12 +387,32 @@ function arrowSwitchSettings(config = {}) {
   };
 }
 
+function validateAutomationCharacter(gameState) {
+  if (!automationEnabled) return false;
+  const expected = String(automationPayload.characterName || automationPayload.character_name || automationPayload.character?.name || "").trim();
+  const actual = String(gameState?.character?.name || "").trim();
+  if (!actual) return false; // A reconnect screen is not a character identity.
+  if (expected && actual === expected) return true;
+  automationEnabled = false;
+  automationActions = [];
+  automationConfig = {};
+  automationPayload = {};
+  lastOperationError = { at: new Date().toISOString(), command: "identity-check", message: "Automação desativada: o personagem mudou ou a configuração antiga não identifica seu personagem" };
+  persistAutomationState();
+  void sendEvent({ type: "automation.identity-mismatch", message: lastOperationError.message });
+  return false;
+}
+
 async function runArrowSwitchCycle(gameState) {
+  if (!validateAutomationCharacter(gameState)) return;
   const settings = arrowSwitchSettings(automationConfig);
   const creatureCount = Number(gameState?.creaturesOnScreen?.count);
   if (!automationEnabled || !settings || arrowSwitchBusy || commandBusy || automationBusy || !gameState?.inHunt) return;
   if (gameState?.socket?.fresh !== true || gameState?.ammunition?.kind !== "arrow" || !Number.isFinite(creatureCount)) return;
   const desiredItemId = creatureCount >= settings.multiTargetMinCreatures ? settings.multiTargetArrowId : settings.singleTargetArrowId;
+  // Confirmed by the game's level rejection; never repeatedly try Diamond
+  // Arrow on a lower-level paladin, even if an old profile requests it.
+  if (desiredItemId === 35901 && !(Number(gameState?.character?.level) >= 150)) return;
   if (Number(gameState?.ammunition?.arrow) === desiredItemId || Date.now() - lastArrowSwitchAttemptAt < ARROW_SWITCH_RETRY_MS) return;
   arrowSwitchBusy = true;
   lastArrowSwitchAttemptAt = Date.now();
@@ -408,6 +442,7 @@ function scheduleArrowSwitchCycle() {
 }
 
 async function runAutomationCycle(gameState) {
+  if (!validateAutomationCharacter(gameState)) return;
   if (!automationEnabled || automationBusy || commandBusy || !gameState?.inHunt || !thresholdReached(gameState)) return;
   automationBusy = true;
   lastReturnAt = Date.now();
@@ -445,6 +480,7 @@ async function runAutomationCycle(gameState) {
 }
 
 async function runAutoTrainingCycle(gameState) {
+  if (!validateAutomationCharacter(gameState)) return;
   const training = automationPayload?.training;
   const staminaMs = Number(gameState?.staminaMs);
   if (!automationEnabled || automationBusy || commandBusy || !training?.autoWhenStaminaEmpty) return;
@@ -509,7 +545,9 @@ function sendState() {
   lastStatePostAt = Date.now();
   persistAutomationState();
   const adapter = globalThis.GamePilotAdapters?.huntera;
-  const gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname };
+  let gameState;
+  try { gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname }; }
+  catch (error) { showBanner(`falha na leitura: ${error.message}`); return; }
   updateCharacterPageTitle(gameState.detected ? gameState.character?.name : null);
   // Transient command modes must not outlive the UI state they describe. This
   // clears a stale `selling` after the shop closes (or after a reload), which

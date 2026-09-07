@@ -13,6 +13,22 @@ function harness() {
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
+test('public monster catalog retains raw schema and zero immunity without copying items',()=>{
+ const api=harness();
+ api.applySocketMessage({type:'cyclopedia-catalog',code:26,payload:{monsters:[{id:'vampire',name:'Vampire',health:475,resistances:{death:0}}],items:[{private:'excluded'}]}});
+ const frame=plain(api.socketAnalyzerObservation().combatFrames['cyclopedia-catalog']);
+ assert.equal(frame.payload.monsters[0].resistances.death,0);assert.equal(frame.code,26);assert.equal('items' in frame.payload,false);
+ frame.payload.monsters[0].health=1;
+ assert.equal(api.socketAnalyzerObservation().combatFrames['cyclopedia-catalog'].payload.monsters[0].health,475);
+ api.applySocketSnapshot({connected:true,openedAt:'2099-01-01T00:00:00Z'});
+ assert.equal(api.socketAnalyzerObservation().combatFrames['cyclopedia-catalog'],undefined);
+});
+test('oversized creature catalogs are explicitly omitted rather than silently partial',()=>{
+ const api=harness();api.applySocketMessage({type:'cyclopedia-catalog',payload:{monsters:[{name:'x'.repeat(262145)}]}});
+ const f=api.socketAnalyzerObservation().combatFrames['cyclopedia-catalog'];
+ assert.equal(f.payload,null);assert.equal(f.omitted,'payload-exceeds-262144-characters');
+});
+
 test("raw analyzer preserves zero and nested fields without DOM fallback or unrelated values", () => {
   const api = harness();
   api.applySocketMessage({ code: 41, type: "hunt-analyzer-update", payload: { kills: 0, damage: { physical: 12 } }, receivedAt: "2026-09-07T15:00:00Z" });
@@ -121,4 +137,16 @@ test("an empty loot list is not a zero valuation", () => {
   api.applySocketMessage({ type: "hunt-analyzer-update", payload: { loot: [], durationMs: 1000 } });
   assert.equal(api.socketMetrics().goldEarned, undefined);
   assert.equal(api.socketMetrics().balance, null);
+});
+
+test("hunt catalog retains only hunts, clones the payload and resets on reconnect", () => {
+  const api = harness();
+  const payload = {hunts: [{id:'fixture', monsters:[{bestiaryId:'vampire'}], tiers:[{name:'Cautious',monsterCount:2,monsterIndexes:[0],loot:['excluded']}],loot:['excluded'],bests:{solo:123}}], privateData:'excluded'};
+  api.applySocketMessage({type:'hunt-catalog', code:42, payload});
+  payload.hunts[0].id = 'mutated';
+  const frame = plain(api.socketAnalyzerObservation().combatFrames['hunt-catalog']);
+  assert.deepEqual(frame.payload, {hunts:[{id:'fixture', monsters:[{bestiaryId:'vampire'}],tiers:[{name:'Cautious',monsterCount:2,monsterIndexes:[0]}]}]});
+  assert.equal(frame.omitted, null);
+  api.applySocketSnapshot({connected:true, openedAt:'2099-01-01T00:00:00Z'});
+  assert.equal(api.socketAnalyzerObservation().combatFrames['hunt-catalog'], undefined);
 });

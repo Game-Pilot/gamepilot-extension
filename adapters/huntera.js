@@ -200,18 +200,46 @@
       "player-inventory": ["equipment"],
       "inventory-delta": ["changes"],
       "instance-enter": ["instanceId", "scenarioId"],
+      // Public creature definitions from code 26. Keep separate from player
+      // progress and inventory; consumers must inspect the actual game schema.
+      "cyclopedia-catalog": ["monsters"],
+      "hunt-catalog": ["hunts"],
       "player-died": []
     }[message.type];
     if (observationCurrent && combatFields) {
       const selected = Object.fromEntries(combatFields.filter(key => key in payload).map(key => [key, payload[key]]));
       // Do not retain backpack contents in equipment deltas.
       if (message.type === "inventory-delta") selected.changes = (Array.isArray(payload.changes) ? payload.changes : []).filter(change => change.slot);
+      // Code 42 schema observed on 2026-09-07: tiers index the hunt's monsters.
+      // Preserve those arrays in order; omit loot definitions and leaderboard bests.
+      if (message.type === "hunt-catalog" && Array.isArray(payload.hunts)) {
+        selected.hunts = payload.hunts.map(hunt => ({
+          id: hunt.id, name: hunt.name,
+          monsters: hunt.monsters,
+          tiers: Array.isArray(hunt.tiers) ? hunt.tiers.map(tier => ({
+            name: tier.name, monsterCount: tier.monsterCount, monsterIndexes: tier.monsterIndexes
+          })) : hunt.tiers
+        }));
+      }
       const serialized = JSON.stringify(selected);
+      const payloadLimit = ["cyclopedia-catalog", "hunt-catalog"].includes(message.type) ? 262144 : 32768;
       socketState.combatFrames[message.type] = {
         code: message.code ?? null, receivedAt: socketState.lastMessageAt,
-        payload: serialized.length <= 32768 ? JSON.parse(serialized) : null,
-        omitted: serialized.length <= 32768 ? null : "payload-exceeds-32768-characters"
+        payload: serialized.length <= payloadLimit ? JSON.parse(serialized) : null,
+        omitted: serialized.length <= payloadLimit ? null : `payload-exceeds-${payloadLimit}-characters`
       };
+      if (message.type === "hunt-catalog" && serialized.length > payloadLimit) {
+        const hunts = Array.isArray(payload.hunts) ? payload.hunts : [];
+        socketState.combatFrames[message.type].schemaSample = {
+          count: hunts.length,
+          firstEntry: Object.fromEntries(Object.entries(hunts[0] || {}).slice(0, 40).map(([key, value]) => {
+            const sample = Array.isArray(value) ? value.slice(0, 2) : value;
+            return [key, { type: Array.isArray(value) ? "array" : typeof value,
+              count: Array.isArray(value) ? value.length : undefined,
+              sample: JSON.stringify(sample)?.length <= 4096 ? JSON.parse(JSON.stringify(sample)) : null }];
+          }))
+        };
+      }
       if (message.type === "inventory-delta" && socketState.combatFrames["player-inventory"]?.payload?.equipment) {
         const baseline = socketState.combatFrames["player-inventory"];
         for (const change of selected.changes) baseline.payload.equipment[change.slot] = change.item || null;
@@ -591,6 +619,7 @@
       },
       training: socketTraining(),
       party,
+      combatBarJournal: readCombatBarJournal(),
       target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null, strategy: party.targetStrategy, label: party.targetLabel },
       socket: {
         analyzerObservation: socketAnalyzerObservation(),
@@ -1806,6 +1835,130 @@
     return { ok: false, error: `A ação ${actionKey} não está atribuída à barra de ações do personagem` };
   }
 
+  // Dependency-injected so acknowledgement delays, reload recovery and
+  // concurrent user edits can be tested without clicking a real game.
+  function createCombatBarExecutor(io) {
+    const clone = value => JSON.parse(JSON.stringify(value));
+    function stable(value) {
+      if (Array.isArray(value)) return value.map(stable);
+      if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])]));
+      return value;
+    }
+    const canonical = bar => JSON.stringify(stable({ ...bar, slots: bar.slots.map(slot => slot ? { ...slot, enabled: slot.enabled !== false } : null) }));
+    function inspect(name) {
+      const state = io.read();
+      if (!name || state.name !== name || !state.characterId || !state.playerId || !state.openedAt) throw Error("Identidade do personagem não confirmada");
+      if (!state.connected || !state.inTown) throw Error("Teste de barra exige conexão ativa e personagem na cidade");
+      if (state.frame?.code !== 2 || state.frame.omitted || !Array.isArray(state.frame?.payload?.slots) || state.frame.payload.slots.length !== 20) throw Error("Barra completa ainda não recebida do servidor");
+      const at = Date.parse(state.frame.receivedAt);
+      if (!Number.isFinite(at) || at < Date.parse(state.openedAt) || at > io.now()) throw Error("Frame de barra inválido");
+      return { ...state, bar: clone(state.frame.payload), at };
+    }
+    function bound(journal, state, reconnect = false) {
+      if (state.name !== journal.name || state.characterId !== journal.characterId ||
+          (!reconnect && (state.playerId !== journal.playerId || state.openedAt !== journal.openedAt))) throw Error("Personagem ou conexão mudou durante o teste");
+    }
+    async function acknowledge(journal, expected, after) {
+      const until = io.now() + 6000;
+      while (io.now() <= until) {
+        const state = inspect(journal.name); bound(journal, state);
+        if (state.at > after) {
+          if (canonical(state.bar) !== canonical(expected)) throw Error("Servidor confirmou uma barra diferente; restauração automática suspensa");
+          return { receivedAt: state.frame.receivedAt, bar: state.bar };
+        }
+        await io.sleep(100);
+      }
+      throw Error("Servidor não confirmou a alteração da barra no prazo");
+    }
+    async function restore(journal, reconnect = false) {
+      if (journal.schemaVersion !== 1 || !Number.isInteger(journal.slot) || journal.slot < 0 || journal.slot >= 20 ||
+          journal.beforeBar?.slots?.length !== 20 || journal.beforeBar.slots[journal.slot]?.spellId !== "divine-missile" ||
+          journal.beforeBar.slots[journal.slot].enabled === false) throw Error("Backup de barra inválido");
+      const expected = clone(journal.beforeBar); expected.slots[journal.slot].enabled = false;
+      if (canonical(expected) !== canonical(journal.expectedBar)) throw Error("Backup de barra inconsistente");
+      const state = inspect(journal.name); bound(journal, state, reconnect);
+      if (canonical(state.bar) === canonical(journal.beforeBar)) {
+        // Only a new server observation can settle an interrupted request.
+        if (state.at <= journal.beforeFrameAt) throw Error("Restauração aguarda um novo frame do servidor");
+        journal.status = "restored";
+        journal.restored = { receivedAt: state.frame.receivedAt, bar: state.bar };
+        io.save(journal); return journal;
+      }
+      if (canonical(state.bar) !== canonical(journal.expectedBar)) throw Error("Barra editada fora do teste; backup preservado sem sobrescrever alterações");
+      journal.openedAt = state.openedAt;
+      journal.playerId = state.playerId;
+      journal.status = "restore-requested"; io.save(journal);
+      // Recheck immediately before input; no await may separate check and click.
+      const ready = inspect(journal.name); bound(journal, ready);
+      if (canonical(ready.bar) !== canonical(journal.expectedBar)) throw Error("Barra mudou antes da restauração");
+      io.toggle(journal.slot);
+      journal.restored = await acknowledge(journal, journal.beforeBar, ready.at);
+      journal.status = "restored"; io.save(journal); return journal;
+    }
+    return {
+      async run(name) {
+        const pending = io.load();
+        if (pending && pending.status !== "restored") throw Error("Existe teste pendente; restaure o backup antes de iniciar outro");
+        const state = inspect(name);
+        const slots = state.bar.slots.map((slot, index) => slot?.spellId === "divine-missile" ? index : -1).filter(index => index >= 0);
+        if (slots.length !== 1 || state.bar.slots[slots[0]].enabled === false) throw Error("Divine Missile precisa estar ativa em um único slot");
+        const expectedBar = clone(state.bar); expectedBar.slots[slots[0]].enabled = false;
+        const journal = { schemaVersion: 1, id: io.id(), name, characterId: state.characterId, playerId: state.playerId, openedAt: state.openedAt,
+          slot: slots[0], status: "apply-requested", beforeBar: state.bar, expectedBar, beforeFrameAt: state.at, createdAt: io.now() };
+        io.save(journal); // Durable backup must succeed before the first input.
+        try {
+          const ready = inspect(name); bound(journal, ready);
+          if (canonical(ready.bar) !== canonical(journal.beforeBar)) throw Error("Barra mudou antes da aplicação");
+          io.toggle(journal.slot);
+          journal.applied = await acknowledge(journal, expectedBar, ready.at);
+          journal.status = "applied"; io.save(journal);
+          return await restore(journal);
+        } catch (error) {
+          journal.error = error.message;
+          journal.status = "recovery-required"; io.save(journal);
+          // Do not guess whether a timed-out toggle reached the server. Recovery
+          // is a separate command with a fresh authoritative bar observation.
+          throw error;
+        }
+      },
+      async recover(name) {
+        const journal = io.load();
+        if (!journal || journal.name !== name) throw Error("Backup não encontrado para este personagem");
+        return restore(journal, true);
+      }
+    };
+  }
+
+  const COMBAT_BAR_JOURNAL_KEY = "gamepilot.combatBarJournal.v1";
+  let combatBarBusy = false;
+  function readCombatBarJournal() {
+    try { return JSON.parse(sessionStorage.getItem(COMBAT_BAR_JOURNAL_KEY) || "null"); }
+    catch { return { status: "unreadable-backup" }; }
+  }
+  async function combatBarExperiment(name, recover = false, characterId = null) {
+    if (combatBarBusy) return { ok: false, error: "Teste de barra já em andamento" };
+    combatBarBusy = true;
+    try {
+      const executor = createCombatBarExecutor({
+        read: () => ({ name: document.querySelector(".header-character-name")?.textContent?.trim(), characterId, playerId: socketState.playerId,
+          openedAt: socketState.observationOpenedAt, connected: socketFresh(),
+          inTown: inTown() && !visible(document.querySelector("#nav-leave-hunt")), frame: socketState.combatFrames["action-bar-update"] }),
+        now: () => Date.now(), id: () => crypto.randomUUID(),
+        sleep: ms => new Promise(resolve => window.setTimeout(resolve, ms)),
+        load: readCombatBarJournal,
+        save: journal => { sessionStorage.setItem(COMBAT_BAR_JOURNAL_KEY, JSON.stringify(journal)); },
+        toggle: index => {
+          const slot = document.querySelector(`button.hud-slot[data-action-slot="${index}"]`);
+          if (!slot || !visible(slot)) throw Error("Slot da ação não está visível");
+          slot.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
+        }
+      });
+      const journal = await (recover ? executor.recover(name) : executor.run(name));
+      return { ok: true, journal };
+    } catch (error) { return { ok: false, error: error.message, journal: readCombatBarJournal() }; }
+    finally { combatBarBusy = false; }
+  }
+
   async function configureActions(rules = []) {
     await waitUntil(() => [...document.querySelectorAll("button.hud-slot")].some(visible), 5000, 100);
     const list = Array.isArray(rules) ? rules : [];
@@ -2371,5 +2524,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, configureAccountLoot, selectAmmo, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, combatBarExperiment, readCombatBarJournal, configureAccountLoot, selectAmmo, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();
