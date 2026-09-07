@@ -904,18 +904,58 @@
 
   function bestiaryThumbnail(card) {
     if (!card?.querySelectorAll) return null;
+    const validPng = (value) => typeof value === "string"
+      && /^data:image\/png;base64,[a-z0-9+/=]+$/i.test(value)
+      && value.length <= 120000
+      ? value
+      : null;
     const canvases = [...card.querySelectorAll("canvas")]
       .filter((canvas) => Number(canvas?.width) >= 24 && Number(canvas?.height) >= 24)
       .sort((left, right) => (Number(right.width) * Number(right.height)) - (Number(left.width) * Number(left.height)));
     for (const canvas of canvases) {
       try {
-        const dataUrl = canvas.toDataURL?.("image/png");
+        const dataUrl = validPng(canvas.toDataURL?.("image/png"));
         // A 64 px Huntera portrait is normally only a few KB. Keep a generous
         // ceiling so a malformed or full-window canvas never bloats sync calls.
-        if (typeof dataUrl === "string" && /^data:image\/png;base64,/i.test(dataUrl) && dataUrl.length <= 120000) return dataUrl;
+        if (dataUrl) return dataUrl;
       } catch {
         // A tainted/unready canvas should not block the Bestiary sync.
       }
+    }
+
+    const toPng = (image) => {
+      const direct = validPng(image?.currentSrc || image?.src || image?.getAttribute?.("src"));
+      if (direct) return direct;
+      if (typeof document?.createElement !== "function") return null;
+      const width = Number(image?.naturalWidth || image?.width || 0);
+      const height = Number(image?.naturalHeight || image?.height || 0);
+      if (width < 24 || height < 24 || image?.complete === false) return null;
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.min(width, 128);
+        canvas.height = Math.min(height, 128);
+        const context = canvas.getContext?.("2d");
+        if (!context) return null;
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        return validPng(canvas.toDataURL?.("image/png"));
+      } catch {
+        // Cross-origin or not-yet-loaded images cannot be copied safely.
+        return null;
+      }
+    };
+
+    for (const image of card.querySelectorAll("img")) {
+      const dataUrl = toPng(image);
+      if (dataUrl) return dataUrl;
+    }
+
+    const backgroundElements = [...card.querySelectorAll("[style]")];
+    for (const element of backgroundElements) {
+      const style = window.getComputedStyle?.(element) || element.style || {};
+      const background = style.backgroundImage || element.style?.backgroundImage || "";
+      const match = String(background).match(/url\(["']?(data:image\/[^)"']+)["']?\)/i);
+      const dataUrl = validPng(match?.[1]);
+      if (dataUrl) return dataUrl;
     }
     return null;
   }

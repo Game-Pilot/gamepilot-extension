@@ -197,6 +197,18 @@ test("captures the Huntera monster canvas without allowing oversized images", ()
   assert.equal(api.bestiaryThumbnail({ querySelectorAll: () => [oversized] }), null);
 });
 
+test("captures a PNG image source when the Huntera card is not a canvas", () => {
+  const api = adapter();
+  const image = { src: "data:image/png;base64,c291cmNl", currentSrc: "data:image/png;base64,c291cmNl", complete: true, width: 64, height: 64 };
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: (selector) => selector === "canvas" ? [] : [image] }), "data:image/png;base64,c291cmNl");
+});
+
+test("captures a PNG background image when the Huntera card uses a styled visual", () => {
+  const api = adapter();
+  const element = { style: { backgroundImage: "url(\"data:image/png;base64,YmFja2dyb3VuZA==\")" } };
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: (selector) => selector === "[style]" ? [element] : [] }), "data:image/png;base64,YmFja2dyb3VuZA==");
+});
+
 test("does not use a partial wire-9 payload as a complete sync", () => {
   const api = adapter();
   api.configureFixture({ bestiarySocket: {
