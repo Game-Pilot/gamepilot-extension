@@ -242,6 +242,11 @@ async function handleCommand(command, commandId, payload = {}) {
       const previousHunt = automationConfig;
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       automationEnabled = false;
+      // Keep the next bestiary target visible while the character returns and
+      // sells. Without this, live reports describe only a generic operation
+      // until the next hunt has already started.
+      automationPayload = payload;
+      automationConfig = payload.hunt || previousHunt || {};
       automationBusy = true;
       try {
         mode = "returning"; showBanner("bestiário concluído; retornando para avançar");
@@ -255,9 +260,7 @@ async function handleCommand(command, commandId, payload = {}) {
         const sold = await sellAndCloseStore(adapter, payload.loot || automationPayload?.loot || {});
         if (!sold.ok) throw new Error(sold.error || "Não foi possível vender o loot");
         await sendEvent({ type: "items.sold", message: sold.message || `Loot vendido antes do próximo monstro`, details: { ...sold, automatic: true } });
-        automationConfig = payload.hunt || {};
         automationActions = nextActions;
-        automationPayload = payload;
         lastReturnAt = 0;
         mode = "starting";
         const configured = await adapter?.configureActions?.(nextActions) || { ok: true, configured: 0 };
@@ -362,6 +365,39 @@ async function runAutoTrainingCycle(gameState) {
 }
 
 let lastStatePostAt = 0;
+
+function operationReport(gameState) {
+  const bestiary = automationPayload?.bestiary?.enabled ? automationPayload.bestiary : null;
+  const group = automationPayload?.operation === "group-hunt" ? automationPayload.group || {} : null;
+  const training = gameState?.training?.active || automationPayload?.operation === "training";
+  const activeMode = gameState?.shopOpen ? "selling"
+    : gameState?.training?.active ? "training"
+      : mode === "reconnecting" ? "reconnecting"
+        : mode === "returning" ? "returning"
+          : mode === "selling" ? "selling"
+            : mode === "starting" ? "starting"
+              : gameState?.inHunt ? "hunting"
+                : mode;
+  const type = bestiary ? "bestiary"
+    : group ? "group-hunt"
+      : training ? "training"
+        : automationEnabled || ["starting", "hunting", "returning", "selling", "reconnecting"].includes(activeMode) ? "hunt"
+          : null;
+  if (!type) return null;
+  const liveBestiary = gameState?.bestiaryLive;
+  const sameBestiaryTarget = bestiary && liveBestiary?.monsterKey === bestiary.monsterKey;
+  return {
+    type,
+    phase: activeMode,
+    hunt: automationConfig || null,
+    bestiary: bestiary ? {
+      ...bestiary,
+      ...(sameBestiaryTarget && liveBestiary?.killCount != null ? { killCount: liveBestiary.killCount } : {})
+    } : null,
+    group: group ? { id: group.id || null, name: group.name || null, role: group.role || null } : null
+  };
+}
+
 function sendState() {
   lastStatePostAt = Date.now();
   persistAutomationState();
@@ -391,7 +427,7 @@ function sendState() {
   }
   void runAutoTrainingCycle(gameState);
   void runAutomationCycle(gameState);
-  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, lastError: lastOperationError } };
+  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, operation: operationReport(gameState), lastError: lastOperationError } };
   // Busy tabs still ask for stop/return interrupts; the worker requests only
   // those commands. A normal command must remain queued until we are idle.
   const wantsCommand = !commandBusy && !automationBusy;
