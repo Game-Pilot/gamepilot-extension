@@ -15,6 +15,34 @@ let lastTrainingAttemptAt = 0;
 const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
 const TRAINING_RETRY_MS = 30000;
 let recoveryNoticeSent = false;
+let hunteraPageTitle = document.title;
+let characterPageTitle = null;
+
+function updateCharacterPageTitle(characterName) {
+  const name = String(characterName || "").trim();
+  const nextTitle = name ? `${name} — Huntera` : null;
+  if (nextTitle) {
+    characterPageTitle = nextTitle;
+    if (document.title !== nextTitle) document.title = nextTitle;
+    return;
+  }
+  if (characterPageTitle && document.title === characterPageTitle) document.title = hunteraPageTitle;
+  characterPageTitle = null;
+}
+
+// Huntera is a SPA and may rewrite <title> after navigation. Remember its most
+// recent native title, then immediately restore the character label while the
+// character remains selected.
+new MutationObserver(() => {
+  if (!characterPageTitle) {
+    hunteraPageTitle = document.title;
+    return;
+  }
+  if (document.title !== characterPageTitle) {
+    hunteraPageTitle = document.title;
+    document.title = characterPageTitle;
+  }
+}).observe(document.head, { childList: true, subtree: true, characterData: true });
 
 // A stable per-tab connection key. Reloads in the same tab must reuse the same
 // key so the API updates a single agent_connections row instead of leaving a
@@ -339,6 +367,7 @@ function sendState() {
   persistAutomationState();
   const adapter = globalThis.GamePilotAdapters?.huntera;
   const gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname };
+  updateCharacterPageTitle(gameState.detected ? gameState.character?.name : null);
   // Transient command modes must not outlive the UI state they describe. This
   // clears a stale `selling` after the shop closes (or after a reload), which
   // previously hid a real training-update behind a false "Vendendo" status.

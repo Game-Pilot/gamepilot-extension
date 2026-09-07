@@ -6,8 +6,11 @@
     <title>GamePilot</title>
     <style>
       :root { color-scheme: dark; font-family: system-ui, -apple-system, sans-serif; }
-      body { width: 280px; margin: 0; padding: 16px; background: #121824; color: #f5f7fb; }
+      body { width: 300px; margin: 0; padding: 16px; background: #121824; color: #f5f7fb; }
+      .heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
       h1 { margin: 0 0 4px; font-size: 17px; }
+      #environment { padding: 4px 7px; border: 1px solid #475569; border-radius: 999px; color: #cbd5e1; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+      #environment.local { border-color: #f59e0b; background: #f59e0b20; color: #fbbf24; }
       p { margin: 0; color: #a7b0c2; font-size: 12px; line-height: 1.45; }
       .stack { display: grid; gap: 10px; margin-top: 14px; }
       label { display: grid; gap: 6px; color: #cbd5e1; font-size: 12px; font-weight: 700; }
@@ -20,13 +23,24 @@
       #status.connected::before { background: #34d399; box-shadow: 0 0 10px #34d399; }
       #result { min-height: 18px; color: #7dd3fc; }
       #result.error { color: #fca5a5; }
+      #connection-details { display: none; gap: 7px; padding: 10px; border: 1px solid #2d3b52; border-radius: 10px; background: #0f1723; }
+      #connection-details.visible { display: grid; }
+      .detail { display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: baseline; font-size: 11px; }
+      .detail span { color: #8491a8; }
+      .detail strong { overflow: hidden; color: #e5e7eb; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
     </style>
   </head>
   <body>
-    <h1>GamePilot</h1>
+    <div class="heading"><h1>GamePilot</h1><span id="environment">Verificando…</span></div>
     <p>Vincule esta instalação à sua conta para separar cada navegador e aba.</p>
     <div class="stack">
       <div id="status">Verificando vínculo…</div>
+      <div id="connection-details">
+        <div class="detail"><span>Conta</span><strong id="account-name">—</strong></div>
+        <div class="detail"><span>E-mail</span><strong id="account-email">—</strong></div>
+        <div class="detail"><span>Dispositivo</span><strong id="device-name">—</strong></div>
+        <div class="detail"><span>Abas ativas</span><strong id="active-tabs">0</strong></div>
+      </div>
       <form id="pair-form">
         <label>Código gerado no painel<input id="pair-code" maxlength="8" minlength="8" autocomplete="one-time-code" placeholder="AB12CD34" required></label>
         <button type="submit">Vincular extensão</button>

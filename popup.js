@@ -11,6 +11,9 @@ function setResult(message = "", error = false) {
 
 function renderStatus(response) {
   const status = $("#status");
+  const environment = $("#environment");
+  environment.textContent = response?.environment?.label || "Ambiente desconhecido";
+  environment.classList.toggle("local", response?.environment?.key === "local");
   if (!response?.ok) {
     status.textContent = "API indisponível";
     status.classList.remove("connected");
@@ -19,6 +22,8 @@ function renderStatus(response) {
   if (response.status === "unpaired") {
     status.textContent = "Extensão não vinculada";
     status.classList.remove("connected");
+    $("#connection-details").classList.remove("visible");
+    $("#pair-form").hidden = false;
     return;
   }
   const activeConnections = (response.connections || []).filter((item) =>
@@ -26,6 +31,12 @@ function renderStatus(response) {
   ).length;
   status.textContent = `Extensão vinculada · ${activeConnections} conexão(ões)`;
   status.classList.add("connected");
+  $("#connection-details").classList.add("visible");
+  $("#pair-form").hidden = true;
+  $("#account-name").textContent = response.account?.displayName || "Sem nome informado";
+  $("#account-email").textContent = response.account?.email || "E-mail indisponível";
+  $("#device-name").textContent = response.device?.name || "Chrome";
+  $("#active-tabs").textContent = String(activeConnections);
 }
 
 async function refreshStatus() {

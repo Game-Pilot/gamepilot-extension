@@ -4,6 +4,12 @@ const API = "https://gamepilot-api.iancosta.dev";
 const DEVICE_TOKEN_KEY = "gamepilot.deviceToken";
 const INSTALLATION_ID_KEY = "gamepilot.installationId";
 
+function environmentView() {
+  const hostname = new URL(API).hostname;
+  const local = hostname === "127.0.0.1" || hostname === "localhost";
+  return { key: local ? "local" : "production", label: local ? "Desenvolvimento local" : "Produção" };
+}
+
 function storageGet(key) {
   return new Promise((resolve) => chrome.storage.local.get(key, (value) => resolve(value?.[key] || null)));
 }
@@ -57,13 +63,13 @@ async function pairDevice(code) {
     })
   });
   await storageSet({ [DEVICE_TOKEN_KEY]: data.deviceToken });
-  return data;
+  return pairedDeviceStatus();
 }
 
 async function pairedDeviceStatus() {
   const token = await deviceToken();
-  if (!token) return { status: "unpaired", device: null, connections: [] };
-  return api("/api/v1/extension/device-status");
+  if (!token) return { status: "unpaired", environment: environmentView(), account: null, device: null, connections: [] };
+  return { ...(await api("/api/v1/extension/device-status")), status: "paired", environment: environmentView() };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
