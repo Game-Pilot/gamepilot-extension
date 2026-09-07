@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 function invitation(title, sender, members = "IACosta · Master Sorcerer", hunt = false) {
-  const buttons = [0, 1].map(() => ({ hidden: false, disabled: false, clicks: 0,
+  const buttons = ["Accept", "Decline"].map((textContent) => ({ hidden: false, disabled: false, clicks: 0, textContent,
     getBoundingClientRect: () => ({ width: 100, height: 30 }), click() { this.clicks++; } }));
   return {
     hidden: false, textContent: `${title} ${sender} invites you to their party ${members}`,
@@ -13,7 +13,24 @@ function invitation(title, sender, members = "IACosta · Master Sorcerer", hunt 
     querySelector: (selector) => selector === ".invite-title" ? { textContent: title }
       : selector === ".invite-msg" ? { textContent: `${sender} ${/Convite|Rateio/.test(title) ? "convidou você para a party" : "invites you to their party"}` }
       : selector.includes("hunt.png") && hunt ? {} : null,
-    querySelectorAll: (selector) => selector === ".invite-actions button" ? buttons : [], buttons
+    querySelectorAll: (selector) => selector.includes("button") ? buttons : [], buttons
+  };
+}
+
+function transferInvitation(sender, language = "pt") {
+  const portuguese = language === "pt";
+  const title = portuguese ? "Convite para se juntar" : "Join invitation";
+  const message = portuguese ? `${sender} está em outro mundo. Juntar-se?` : `${sender} is on another world. Join them?`;
+  const buttons = (portuguese ? ["Entrar", "Recusar"] : ["Join", "Decline"]).map((textContent) => ({
+    hidden: false, disabled: false, clicks: 0, textContent,
+    getBoundingClientRect: () => ({ width: 100, height: 30 }), click() { this.clicks++; }
+  }));
+  return {
+    hidden: false, textContent: `${title} ${message}`,
+    getAttribute: (name) => name === "aria-label" ? title : null,
+    getBoundingClientRect: () => ({ width: 300, height: 180 }),
+    querySelector: (selector) => selector === "p" ? { textContent: message } : null,
+    querySelectorAll: (selector) => selector.includes("button") ? buttons : [], buttons
   };
 }
 
@@ -29,7 +46,7 @@ function adapter(cards = [], lootControls = []) {
   const context = vm.createContext({
     setTimeout, clearTimeout, Date, console, DataTransfer: FakeDataTransfer, DragEvent: FakeDragEvent,
     window: { setTimeout, addEventListener() {}, postMessage() {}, getComputedStyle: () => ({ display: "block", visibility: "visible" }) },
-    document: { querySelectorAll: (selector) => selector === ".party-invite" ? cards : selector.includes(".hunt-loot-auto") ? lootControls : [], querySelector: () => null }
+    document: { querySelectorAll: (selector) => selector.includes(".party-invite") ? cards : selector.includes(".hunt-loot-auto") ? lootControls : [], querySelector: () => null }
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
@@ -166,6 +183,17 @@ for (const title of ["Party invitation", "Convite de party", "Convite para o gru
     const api = adapter([card]);
     assert.equal(api.findInviteCard("party", "IACosta"), card);
     assert.equal(api.findInviteCard("costs"), null);
+    assert.equal(api.clickInviteAction(card), true);
+    assert.equal(card.buttons[0].clicks, 1);
+    assert.equal(card.buttons[1].clicks, 0);
+  });
+}
+
+for (const language of ["pt", "en"]) {
+  test(`recognizes the cross-world join invitation in ${language}`, () => {
+    const card = transferInvitation("Inarius", language);
+    const api = adapter([card]);
+    assert.equal(api.findInviteCard("party", "Inarius"), card);
     assert.equal(api.clickInviteAction(card), true);
     assert.equal(card.buttons[0].clicks, 1);
     assert.equal(card.buttons[1].clicks, 0);

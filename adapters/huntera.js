@@ -460,7 +460,7 @@
   }
 
   function inviteCards() {
-    return [...document.querySelectorAll(".party-invite")].filter(visible);
+    return [...document.querySelectorAll('.party-invite, [aria-label="Join invitation"], [aria-label="Convite para se juntar"]')].filter(visible);
   }
 
   function findInviteCard(kind, senderName = null) {
@@ -468,9 +468,9 @@
       // Names and member descriptions are not invitation types (IACosta contains "cost").
       const text = normalizeItemName(card.querySelector(".invite-title")?.textContent || card.getAttribute("aria-label") || "");
       if (senderName) {
-        const message = normalizeItemName(card.querySelector(".invite-msg")?.textContent || "");
+        const message = normalizeItemName(card.querySelector(".invite-msg")?.textContent || card.querySelector("p")?.textContent || "");
         const sender = normalizeItemName(senderName);
-        const actualSender = message.match(/^(.+?)\s+(?:invites|convida|convidou|proposes|propoe)\b/)?.[1];
+        const actualSender = message.match(/^(.+?)\s+(?:invites|convida|convidou|proposes|propoe|is on another world|esta em outro mundo)\b/)?.[1];
         if (actualSender !== sender) return false;
       }
       const huntIcon = Boolean(card.querySelector('img[src*="/assets/nav/hunt.png"]'));
@@ -478,14 +478,15 @@
       if (kind === "follow") return /follow party leader|seguir.*(?:lider|puxador)/.test(text);
       if (kind === "costs") return /hunt cost sharing|rateio da hunt|rateio.*cust|compartilh.*cust|custos.*cacada/.test(text);
       if (kind === "experience-warning") return /shared experience warning|experiencia compartilhada|compartilhar exp/.test(text);
-      if (kind === "party") return !huntIcon && /^(party invitation|convite.*(?:party|grupo))$/.test(text);
+      if (kind === "party") return !huntIcon && /^(party invitation|join invitation|convite.*(?:party|grupo)|convite para se juntar)$/.test(text);
       return false;
     }) || null;
   }
 
   function clickInviteAction(card, accept = true) {
-    const buttons = [...(card?.querySelectorAll(".invite-actions button") || [])].filter(visible);
-    const button = buttons[accept ? 0 : 1];
+    const buttons = [...(card?.querySelectorAll(".invite-actions button, button") || [])].filter(visible);
+    const actionPattern = accept ? /^(accept|join|enter|aceitar|entrar)$/ : /^(decline|reject|recusar)$/;
+    const button = buttons.find((item) => actionPattern.test(normalizeItemName(item.textContent))) || buttons[accept ? 0 : 1];
     if (!button || button.disabled) return false;
     button.click();
     return true;
