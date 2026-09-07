@@ -33,7 +33,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases,
       configureFixture(fixture) {
         readState = fixture.readState;
         characterSelectionVisible = () => false;
@@ -71,6 +71,17 @@ test("preserves the current Huntera Bestiary goal for each creature", () => {
   assert.deepEqual({ currentKills: ready.currentKills, targetKills: ready.targetKills, absoluteKills: ready.absoluteKills, rewardReady: ready.rewardReady }, {
     currentKills: 5000, targetKills: 5000, absoluteKills: 7500, rewardReady: true
   });
+});
+
+test("reads Huntera completed phases from the star badge", () => {
+  const api = adapter();
+  const badge = {
+    textContent: "★1",
+    dataset: {},
+    getAttribute(name) { return name === "title" ? "Stage 1 unlocked" : null; }
+  };
+  const card = { textContent: "Rat ★1 0 / 5.000", querySelector: () => badge };
+  assert.equal(api.bestiaryCompletedPhases(card), 1);
 });
 
 test("derives per-creature stage progress from wire-9", () => {

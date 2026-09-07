@@ -787,7 +787,18 @@
 
   function bestiaryCompletedPhases(card) {
     const badge = card.querySelector("[class*='stage'], [class*='tier'], [class*='badge'], [class*='star']");
-    const values = [badge?.textContent, card.textContent].filter(Boolean);
+    const badgeValues = [
+      badge?.textContent,
+      badge?.getAttribute?.("title"),
+      badge?.getAttribute?.("aria-label"),
+      badge?.dataset?.stage,
+      badge?.dataset?.tier
+    ].filter(Boolean);
+    for (const value of badgeValues) {
+      const match = String(value).replace(/\s+/g, " ").match(/(?:[×x★]\s*|(?:stage|fase)\s*)(\d+)/i);
+      if (match) return Number(match[1]);
+    }
+    const values = [card.textContent].filter(Boolean);
     for (const value of values) {
       const match = String(value).replace(/\s+/g, " ").match(/[×x]\s*(\d+)/i);
       if (match) return Number(match[1]);
