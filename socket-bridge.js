@@ -51,6 +51,7 @@
     115: "hunt-start-warning",
     126: "hunt-sell-rules",
     132: "alerts-state",
+    142: "imbuement-materials",
     155: "creature-resync"
   });
 

@@ -390,6 +390,7 @@ test("loot synchronization fails when Huntera reverts an ignored item's checkbox
 
 test("default loot uses the lowest sell offer and only auctions above NPC", () => {
   const api = adapter();
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
   const item = { itemId: "10", name: "Dragon Ham", npcValue: 100 };
   assert.deepEqual({ ...api.lootDisposition(item, { found: true, sellPrices: [140, 120] }, "default") }, { destination: "auction", reason: "oferta de venda maior que o NPC", sellPrice: 120 });
   assert.equal(api.lootDisposition(item, { found: true, sellPrices: [100] }, "default").destination, "npc");
@@ -398,11 +399,33 @@ test("default loot uses the lowest sell offer and only auctions above NPC", () =
 
 test("default loot falls back to NPC without a quote and only stores items without NPC value", () => {
   const api = adapter();
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
   assert.equal(api.lootDisposition({ npcValue: 100 }, { found: false, sellPrices: [] }, "default").destination, "npc");
   assert.equal(api.lootDisposition({ npcValue: null }, { found: true, sellPrices: [200] }, "default").destination, "warehouse");
   assert.equal(api.lootDisposition({ npcValue: 100 }, { found: true, sellPrices: [200] }, "warehouse").destination, "warehouse");
   assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "npc").destination, "npc");
   assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "ignore").destination, "ignore");
+});
+
+test("default loot deposits official imbuement materials regardless of market or NPC value", () => {
+  const api = adapter();
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [10] } });
+  const item = { itemId: "10", name: "Material", npcValue: 100 };
+  for (const quote of [{ found: true, sellPrices: [10000] }, { found: true, sellPrices: [1] }, {}]) {
+    assert.equal(api.lootDisposition(item, quote).destination, "warehouse");
+  }
+  assert.equal(api.lootDisposition(item, {}, "ignore").destination, "ignore");
+  assert.equal(api.lootDisposition(item, {}, "npc").destination, "npc");
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
+  assert.equal(api.lootDisposition(item).destination, "npc");
+});
+
+test("default loot cannot sell before a valid imbuement catalog arrives", () => {
+  const api = adapter();
+  const item = { itemId: "10", npcValue: 100 };
+  assert.equal(api.lootDisposition(item).destination, "pending");
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: ["10"] } });
+  assert.equal(api.lootDisposition(item).destination, "pending");
 });
 
 test("only maps Huntera backpack entries for selling and moving", () => {

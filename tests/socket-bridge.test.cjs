@@ -91,6 +91,15 @@ test("keeps an authoritative creature roster in socket snapshots", async () => {
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot.creatures)), [{ id: 1, kind: "player" }, { id: 2, kind: "monster", name: "Dragon" }]);
 });
 
+test('retains official imbuement material IDs for content script replay', async () => {
+  const h = bridge(), socket = new h.window.WebSocket('wss://huntera.com.br/game-socket');
+  socket.emit('open');
+  await socket.emit('message', { data: frame(142, { items: [10, 20] }).buffer });
+  const message = h.posts.find(p => p.kind === 'message').message;
+  assert.equal(message.type, 'imbuement-materials');
+  assert.deepEqual(JSON.parse(JSON.stringify(message.payload.items)), [10, 20]);
+});
+
 test('serializes asynchronous decode and discards data from replaced connections', async () => {
   const h=bridge(), s=new h.window.WebSocket('wss://huntera.com.br/game-socket'); s.emit('open');
   let release;

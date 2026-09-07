@@ -78,6 +78,7 @@
     huntLeavePending: null,
     actionBar: null,
     autoLootDisabledItemIds: null,
+    imbuementMaterialIds: null,
     ammoSelection: { arrow: null, bolt: null },
     creatures: new Map(),
     creaturesReceived: false,
@@ -247,6 +248,11 @@
       }
     }
     switch (message.type) {
+      case "imbuement-materials":
+        if (!observationCurrent) break;
+        socketState.imbuementMaterialIds = Array.isArray(payload.items) && payload.items.every(id => Number.isInteger(id) && id > 0)
+          ? new Set(payload.items.map(String)) : null;
+        break;
       case "player-stats":
         socketState.playerStats = payload;
         if (Number(payload.huntSessionRemainingMs) > 0 && socketState.phase !== "returning") socketState.phase = "hunting";
@@ -364,6 +370,7 @@
     socketState.socketUrl = snapshot.socketUrl || socketState.socketUrl;
     if (snapshot.openedAt && snapshot.openedAt !== socketState.observationOpenedAt) {
       socketState.observationOpenedAt = snapshot.openedAt;
+      socketState.imbuementMaterialIds = null;
       observedAnalyzer?.reset();
       socketState.analyzer = null;
       socketState.analyzerFrames = {};
@@ -541,6 +548,7 @@
         socketState.creaturesReceived = false;
         socketState.playerId = null;
         socketState.autoLootDisabledItemIds = null;
+        socketState.imbuementMaterialIds = null;
       }
     }
     else if (event.data.kind === "snapshot") applySocketSnapshot(event.data.snapshot);
@@ -2264,6 +2272,8 @@
     if (policy === "ignore") return { destination: "ignore", reason: "política da conta: não coletar nem vender", sellPrice: null };
     if (policy === "warehouse") return { destination: "warehouse", reason: "política da conta: sempre guardar", sellPrice: null };
     if (policy === "npc") return { destination: "npc", reason: "política da conta: sempre vender no NPC", sellPrice: null };
+    if (!socketState.imbuementMaterialIds) return { destination: "pending", reason: "aguardando catálogo de materiais de imbuement", sellPrice: null };
+    if (socketState.imbuementMaterialIds.has(String(item.itemId))) return { destination: "warehouse", reason: "material de imbuement: sempre depositar no modo padrão", sellPrice: null };
     const sellPrices = Array.isArray(quote.sellPrices) ? quote.sellPrices.filter((value) => Number.isFinite(Number(value))).map(Number) : [];
     const sellPrice = sellPrices.length ? Math.min(...sellPrices) : null;
     if (item.npcValue == null || !Number.isFinite(Number(item.npcValue))) return { destination: "warehouse", reason: "item sem preço de NPC", sellPrice };
@@ -2484,7 +2494,10 @@
       const configured = (config.items || []).find((entry) => String(entry.externalItemId) === String(item.itemId) || normalizeItemName(entry.name) === normalizeItemName(item.name));
       return { ...item, npcValue: item.npcValue ?? configured?.npcValue ?? null, policy: configuredLootPolicy(config, item) };
     });
-    const defaultItems = withPolicies.filter((item) => item.policy === "default");
+    if (withPolicies.some(item => item.policy === "default") && !socketState.imbuementMaterialIds) {
+      return { ok: false, sold: 0, error: "Aguardando catálogo de materiais de imbuement do Huntera antes de vender loot" };
+    }
+    const defaultItems = withPolicies.filter((item) => item.policy === "default" && !socketState.imbuementMaterialIds.has(String(item.itemId)));
     const auction = defaultItems.length ? await readAuctionQuotes(defaultItems) : { ok: true, quotes: [] };
     const quotes = new Map((auction.quotes || []).map((quote) => [String(quote.itemId), quote]));
     let decisions = withPolicies.map((item) => ({ ...item, ...lootDisposition(item, auction.ok ? quotes.get(String(item.itemId)) : {}, item.policy) }));
