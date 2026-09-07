@@ -1775,7 +1775,7 @@
   }
 
   function inventoryLootItems() {
-    const source = [...(socketState.inventory?.slots || []), ...(socketState.inventory?.satchel || [])].filter(Boolean);
+    const source = (socketState.inventory?.slots || []).filter(Boolean);
     const grouped = new Map();
     for (const raw of source) {
       const itemId = raw.itemId ?? raw.item_id ?? raw.id ?? raw.typeId ?? raw.type_id;
@@ -1789,22 +1789,28 @@
     return [...grouped.values()];
   }
 
+  function backpackItemsWithNpcOffers(offers = []) {
+    const byId = new Map(inventoryLootItems().map((item) => [item.itemId, item]));
+    for (const offer of offers) {
+      const backpackItem = byId.get(offer.itemId);
+      if (backpackItem) byId.set(offer.itemId, { ...offer, ...backpackItem, npcValue: offer.npcValue ?? backpackItem.npcValue });
+    }
+    return [...byId.values()];
+  }
+
   function inventoryRefsForItem(itemId) {
     const inventory = socketState.inventory || {};
     const expected = String(itemId);
     const refs = [];
-    for (const [container, items] of [["backpack", inventory.slots || []], ["satchel", inventory.satchel || []]]) {
-      items.forEach((item, index) => {
-        const currentId = item?.itemId ?? item?.item_id ?? item?.id ?? item?.typeId ?? item?.type_id;
-        if (currentId != null && String(currentId) === expected) refs.push({ container, index, item });
-      });
-    }
+    (inventory.slots || []).forEach((item, index) => {
+      const currentId = item?.itemId ?? item?.item_id ?? item?.id ?? item?.typeId ?? item?.type_id;
+      if (currentId != null && String(currentId) === expected) refs.push({ container: "backpack", index, item });
+    });
     return refs;
   }
 
   function inventoryItemAt(ref) {
-    const inventory = socketState.inventory || {};
-    return ref.container === "satchel" ? inventory.satchel?.[ref.index] : inventory.slots?.[ref.index];
+    return socketState.inventory?.slots?.[ref.index];
   }
 
   function inventoryCountForItem(itemId) {
@@ -1823,6 +1829,35 @@
     target.dispatchEvent(new DragEvent("drop", options));
     source.dispatchEvent(new DragEvent("dragend", options));
     return true;
+  }
+
+  async function confirmSlotMoveQuantity(expectedCount) {
+    let dialog = null;
+    let amountInput = null;
+    const appeared = await waitUntil(() => {
+      const inputs = [...document.querySelectorAll([
+        ".move-quantity-dialog input", ".quantity-dialog input", ".stack-dialog input",
+        ".trade-dialog input", ".modal input", "[role='dialog'] input"
+      ].join(", "))].filter(visible);
+      amountInput = inputs.find((input) => /amount|quantity|count|quantidade|qtd/i.test(`${input.name || ""} ${input.id || ""} ${input.dataset?.field || ""} ${input.getAttribute?.("aria-label") || ""}`))
+        || inputs.find((input) => ["number", "range"].includes(input.type));
+      dialog = amountInput?.closest?.(".move-quantity-dialog, .quantity-dialog, .stack-dialog, .trade-dialog, .modal, [role='dialog']") || null;
+      return Boolean(dialog && amountInput);
+    }, 800, 50);
+    if (!appeared) return { ok: true, prompted: false };
+
+    const maximum = Number(amountInput.max);
+    const desired = Math.max(1, Math.min(Math.max(1, Number(expectedCount) || 1), Number.isFinite(maximum) && maximum > 0 ? maximum : Infinity));
+    setControlValue(amountInput, String(desired));
+    const confirm = buttonMatching(dialog, /confirmar|mover|transferir|guardar|depositar|confirm|move|transfer|deposit/i, [
+      "button[type='submit']", "[data-action='confirm']", ".confirm", ".primary"
+    ]);
+    if (!confirm) return { ok: false, prompted: true, error: "Botão para confirmar a quantidade não encontrado" };
+    confirm.click();
+    const closed = await waitUntil(() => !visible(dialog), 2500, 50);
+    return closed
+      ? { ok: true, prompted: true, count: desired }
+      : { ok: false, prompted: true, error: "O Huntera não confirmou a quantidade transferida" };
   }
 
   function buttonMatching(root, pattern, selectors = []) {
@@ -1876,20 +1911,23 @@
         let storedCount = 0;
         let itemError = null;
         for (const ref of refs) {
-          const grid = warehouse.querySelector(ref.container === "satchel" ? ".depot-satchel-grid" : ".depot-pack-grid");
+          const grid = warehouse.querySelector(".depot-pack-grid");
           const source = grid?.querySelectorAll(".slot")?.[ref.index];
           const target = [...warehouse.querySelectorAll(".depot-grid .slot")].find((slot) => !slot.draggable && slot.childElementCount === 0 && visible(slot));
           if (!source || !source.draggable) { itemError = "Slot do item não corresponde ao inventário recebido"; break; }
           if (!target) { itemError = "Não há espaço livre no depósito"; break; }
           const moved = dispatchSlotMove(source, target, ref);
           if (!moved) { itemError = "O navegador não permitiu mover o item para o depósito"; break; }
+          const refCount = Math.max(1, Number(ref.item?.count ?? ref.item?.quantity ?? ref.item?.amount ?? 1) || 1);
+          const quantity = await confirmSlotMoveQuantity(refCount);
+          if (!quantity.ok) { itemError = quantity.error; break; }
           const confirmed = await waitUntil(() => {
             const current = inventoryItemAt(ref);
             const currentId = current?.itemId ?? current?.item_id ?? current?.id ?? current?.typeId ?? current?.type_id;
             return currentId == null || String(currentId) !== String(item.itemId);
           }, 4000, 100);
           if (!confirmed) { itemError = "O depósito não confirmou a transferência"; break; }
-          storedCount += Math.max(1, Number(ref.item?.count ?? ref.item?.quantity ?? ref.item?.amount ?? 1) || 1);
+          storedCount += refCount;
         }
         if (storedCount > 0) storedItems.push({ itemId: item.itemId, name: item.name, count: storedCount });
         if (itemError) failedItems.push({ ...item, error: itemError });
@@ -1914,6 +1952,12 @@
       const transaction = await waitFor("#shop-transaction", 2500, true);
       const sellButton = transaction?.querySelector(".shop-buy");
       if (!sellButton || !visible(sellButton) || sellButton.disabled) { failedItems.push({ ...item, error: "Ação de venda do NPC indisponível" }); continue; }
+      const amountInput = transaction.querySelector("input[name='amount'], input[name='quantity'], input[data-field='amount'], input[data-field='quantity'], .shop-amount input, .shop-quantity input, input[type='number'], input[type='range']");
+      if (amountInput) {
+        const maximum = Number(amountInput.max);
+        const amount = Math.max(1, Math.min(beforeCount || item.count || 1, Number.isFinite(maximum) && maximum > 0 ? maximum : Infinity));
+        setControlValue(amountInput, String(amount));
+      }
       sellButton.click();
       const confirmed = await waitUntil(() => {
         const currentOffer = [...shop.querySelectorAll("#shop-offers .shop-offer")].find((entry) => String(entry.dataset.itemId) === String(item.itemId) && visible(entry));
@@ -1936,9 +1980,7 @@
     sellTab.click();
     await waitFor("#shop-offers .shop-offer", 3000, true);
     const npcOffers = readNpcSellOffers(shop);
-    const byId = new Map(inventoryLootItems().map((item) => [item.itemId, item]));
-    for (const offer of npcOffers) byId.set(offer.itemId, { ...(byId.get(offer.itemId) || {}), ...offer });
-    const ownedItems = [...byId.values()];
+    const ownedItems = backpackItemsWithNpcOffers(npcOffers);
     if (!ownedItems.length) return { ok: true, sold: 0, auctionListed: 0, stored: 0, message: "Nenhum item disponível para destinação" };
     const withPolicies = ownedItems.map((item) => {
       const configured = (config.items || []).find((entry) => String(entry.externalItemId) === String(item.itemId) || normalizeItemName(entry.name) === normalizeItemName(item.name));

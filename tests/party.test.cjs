@@ -35,6 +35,14 @@ function transferInvitation(sender, language = "pt") {
 }
 
 function adapter(cards = [], lootControls = []) {
+  class FakeInputElement {
+    constructor() { this.value = "1"; }
+    dispatchEvent() {}
+  }
+  class FakeSelectElement extends FakeInputElement {}
+  class FakeEvent {
+    constructor(type, options) { this.type = type; Object.assign(this, options); }
+  }
   class FakeDataTransfer {
     constructor() { this.values = new Map(); this.effectAllowed = "none"; }
     setData(type, value) { this.values.set(type, value); }
@@ -44,13 +52,13 @@ function adapter(cards = [], lootControls = []) {
     constructor(type, options) { this.type = type; Object.assign(this, options); }
   }
   const context = vm.createContext({
-    setTimeout, clearTimeout, Date, console, DataTransfer: FakeDataTransfer, DragEvent: FakeDragEvent,
+    setTimeout, clearTimeout, Date, console, Event: FakeEvent, HTMLInputElement: FakeInputElement, HTMLSelectElement: FakeSelectElement, DataTransfer: FakeDataTransfer, DragEvent: FakeDragEvent,
     window: { setTimeout, addEventListener() {}, postMessage() {}, getComputedStyle: () => ({ display: "block", visibility: "visible" }) },
     document: { querySelectorAll: (selector) => selector.includes(".party-invite") ? cards : selector.includes(".hunt-loot-auto") ? lootControls : [], querySelector: () => null }
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -275,7 +283,7 @@ test("default loot falls back to NPC without a quote and only stores items witho
   assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "ignore").destination, "ignore");
 });
 
-test("maps current Huntera backpack and satchel entries to stable slot references", () => {
+test("only maps Huntera backpack entries for selling and moving", () => {
   const api = adapter();
   api.configureFixture({
     inventory: {
@@ -285,8 +293,19 @@ test("maps current Huntera backpack and satchel entries to stable slot reference
   });
   const refs = JSON.parse(JSON.stringify(api.inventoryRefsForItem("10").map(({ container, index, item }) => ({ container, index, count: item.count }))));
   assert.deepEqual(refs, [
-    { container: "backpack", index: 0, count: 2 },
-    { container: "satchel", index: 0, count: 4 }
+    { container: "backpack", index: 0, count: 2 }
+  ]);
+  assert.equal(api.inventoryCountForItem("10"), 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.inventoryLootItems())), [
+    { itemId: "10", name: "Dragon Ham", count: 2, npcValue: null },
+    { itemId: "11", name: "Halberd", count: 1, npcValue: null }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.backpackItemsWithNpcOffers([
+    { itemId: "10", name: "Dragon Ham", count: 6, npcValue: 50 },
+    { itemId: "12", name: "Satchel-only item", npcValue: 500 }
+  ]))), [
+    { itemId: "10", name: "Dragon Ham", count: 2, npcValue: 50 },
+    { itemId: "11", name: "Halberd", count: 1, npcValue: null }
   ]);
 });
 
@@ -303,6 +322,34 @@ test("moves a Huntera inventory slot with the game's current drag payload", () =
     ["source", "dragstart"], ["target", "dragover"], ["target", "drop"], ["source", "dragend"]
   ]);
   assert.equal(events[2].event.dataTransfer.getData("application/x-slot-ref"), '{"container":"backpack","index":3}');
+});
+
+test("confirms the full stack when moving a grouped item", async () => {
+  const api = adapter();
+  let open = true;
+  let clicks = 0;
+  const confirm = {
+    hidden: false, disabled: false, textContent: "Confirmar",
+    getBoundingClientRect: () => ({ width: 80, height: 30 }),
+    click() { clicks++; open = false; }
+  };
+  const dialog = {
+    hidden: false, textContent: "Quantidade a mover",
+    getBoundingClientRect: () => open ? ({ width: 240, height: 160 }) : ({ width: 0, height: 0 }),
+    querySelectorAll: () => [confirm]
+  };
+  const input = {
+    value: "1", max: "20", type: "number", name: "quantity", id: "", dataset: {},
+    hidden: false, getBoundingClientRect: () => ({ width: 100, height: 30 }),
+    getAttribute: () => "Quantidade", closest: () => dialog, dispatchEvent() {}
+  };
+  api.configureDocument({ querySelectorAll: () => open ? [input] : [] });
+  // The adapter's value helper supports browser inputs; this fixture exposes
+  // the same own value property and event surface used by the fallback path.
+  const result = await api.confirmSlotMoveQuantity(12);
+  assert.deepEqual({ ...result }, { ok: true, prompted: true, count: 12 });
+  assert.equal(input.value, "12");
+  assert.equal(clicks, 1);
 });
 
 test("cancelling a pending invitation aborts the wait and allows the next operation", async () => {
