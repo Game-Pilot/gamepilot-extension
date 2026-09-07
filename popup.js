@@ -9,9 +9,35 @@ function setResult(message = "", error = false) {
   $("#result").classList.toggle("error", error);
 }
 
+function renderVersion(version = {}) {
+  const badge = $("#version-badge");
+  const installed = version.installed || chrome.runtime.getManifest().version || "—";
+  $("#installed-version").textContent = `v${installed}`;
+  badge.classList.remove("current", "outdated", "preview");
+  if (!version.latest) {
+    badge.textContent = "Não verificada";
+    $("#latest-version").textContent = "Não foi possível consultar a versão publicada.";
+    return;
+  }
+  $("#latest-version").textContent = `Versão publicada: v${version.latest}`;
+  if (version.updateAvailable) {
+    badge.textContent = "Desatualizada";
+    badge.classList.add("outdated");
+    return;
+  }
+  if (version.aheadOfPublished) {
+    badge.textContent = "Prévia local";
+    badge.classList.add("preview");
+    return;
+  }
+  badge.textContent = "Atualizada";
+  badge.classList.add("current");
+}
+
 function renderStatus(response) {
   const status = $("#status");
   const environment = $("#environment");
+  renderVersion(response?.version);
   environment.textContent = response?.environment?.label || "Ambiente desconhecido";
   environment.classList.toggle("local", response?.environment?.key === "local");
   if (!response?.ok) {

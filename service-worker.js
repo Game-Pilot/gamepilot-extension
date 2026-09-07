@@ -1,6 +1,9 @@
 // The unpacked production build talks to the GamePilot API. Local development
 // can temporarily point this URL to http://127.0.0.1:4317.
 const API = "https://gamepilot-api.iancosta.dev";
+const WEB = API.includes("127.0.0.1") || API.includes("localhost")
+  ? "http://127.0.0.1:3000"
+  : "https://gamepilot-web.iancosta.dev";
 const DEVICE_TOKEN_KEY = "gamepilot.deviceToken";
 const INSTALLATION_ID_KEY = "gamepilot.installationId";
 
@@ -8,6 +11,35 @@ function environmentView() {
   const hostname = new URL(API).hostname;
   const local = hostname === "127.0.0.1" || hostname === "localhost";
   return { key: local ? "local" : "production", label: local ? "Desenvolvimento local" : "Produção" };
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left || "0").split(".").map((part) => Number(part) || 0);
+  const rightParts = String(right || "0").split(".").map((part) => Number(part) || 0);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+async function extensionVersionStatus() {
+  const installed = chrome.runtime.getManifest().version;
+  try {
+    const response = await fetch(`${WEB}/extension-version.json?at=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Versão ${response.status}`);
+    const data = await response.json();
+    const latest = String(data?.version || "").trim() || null;
+    const comparison = latest ? compareVersions(installed, latest) : 0;
+    return {
+      installed,
+      latest,
+      updateAvailable: Boolean(latest) && comparison < 0,
+      aheadOfPublished: Boolean(latest) && comparison > 0
+    };
+  } catch {
+    return { installed, latest: null, updateAvailable: false, aheadOfPublished: false };
+  }
 }
 
 function storageGet(key) {
@@ -63,7 +95,7 @@ async function pairDevice(code) {
     })
   });
   await storageSet({ [DEVICE_TOKEN_KEY]: data.deviceToken });
-  return pairedDeviceStatus();
+  return { ...(await pairedDeviceStatus()), version: await extensionVersionStatus() };
 }
 
 async function pairedDeviceStatus() {
@@ -82,8 +114,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "device-status") {
-    (async () => sendResponse({ ok: true, ...(await pairedDeviceStatus()) }))()
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    (async () => {
+      const version = await extensionVersionStatus();
+      try {
+        sendResponse({ ok: true, ...(await pairedDeviceStatus()), version });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message, environment: environmentView(), version });
+      }
+    })();
     return true;
   }
 
