@@ -8,6 +8,7 @@ function invitation(title, sender, members = "IACosta · Master Sorcerer", hunt 
   const buttons = ["Accept", "Decline"].map((textContent) => ({ hidden: false, disabled: false, clicks: 0, textContent,
     getBoundingClientRect: () => ({ width: 100, height: 30 }), click() { this.clicks++; } }));
   return {
+    selector: ".party-invite",
     hidden: false, textContent: `${title} ${sender} invites you to their party ${members}`,
     getAttribute: () => title, getBoundingClientRect: () => ({ width: 300, height: 180 }),
     querySelector: (selector) => selector === ".invite-title" ? { textContent: title }
@@ -26,6 +27,7 @@ function transferInvitation(sender, language = "pt") {
     getBoundingClientRect: () => ({ width: 100, height: 30 }), click() { this.clicks++; }
   }));
   return {
+    selector: `[aria-label="${title}"]`,
     hidden: false, textContent: `${title} ${message}`,
     getAttribute: (name) => name === "aria-label" ? title : null,
     getBoundingClientRect: () => ({ width: 300, height: 180 }),
@@ -54,7 +56,12 @@ function adapter(cards = [], lootControls = []) {
   const context = vm.createContext({
     setTimeout, clearTimeout, Date, console, Event: FakeEvent, HTMLInputElement: FakeInputElement, HTMLSelectElement: FakeSelectElement, DataTransfer: FakeDataTransfer, DragEvent: FakeDragEvent,
     window: { setTimeout, addEventListener() {}, postMessage() {}, getComputedStyle: () => ({ display: "block", visibility: "visible" }) },
-    document: { querySelectorAll: (selector) => selector.includes(".party-invite") ? cards : selector.includes(".hunt-loot-auto") ? lootControls : [], querySelector: () => null }
+    document: {
+      querySelectorAll: (selector) => selector.includes(".party-invite")
+        ? cards.filter((card) => selector.split(",").map((value) => value.trim()).includes(card.selector))
+        : selector.includes(".hunt-loot-auto") ? lootControls : [],
+      querySelector: () => null
+    }
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
@@ -194,6 +201,17 @@ for (const title of ["Party invitation", "Convite de party", "Convite para o gru
     assert.equal(api.clickInviteAction(card), true);
     assert.equal(card.buttons[0].clicks, 1);
     assert.equal(card.buttons[1].clicks, 0);
+  });
+}
+
+for (const title of ["Party invitation", "Convite de party"]) {
+  test(`recognizes the current classless ${title} modal`, () => {
+    const card = invitation(title, "Inarius");
+    card.selector = `[aria-label="${title}"]`;
+    const api = adapter([card]);
+    assert.equal(api.findInviteCard("party", "Inarius"), card);
+    assert.equal(api.clickInviteAction(card), true);
+    assert.equal(card.buttons[0].clicks, 1);
   });
 }
 

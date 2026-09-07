@@ -460,7 +460,13 @@
   }
 
   function inviteCards() {
-    return [...document.querySelectorAll('.party-invite, [aria-label="Join invitation"], [aria-label="Convite para se juntar"]')].filter(visible);
+    return [...document.querySelectorAll([
+      ".party-invite",
+      '[aria-label="Party invitation"]',
+      '[aria-label="Convite de party"]',
+      '[aria-label="Join invitation"]',
+      '[aria-label="Convite para se juntar"]'
+    ].join(", "))].filter(visible);
   }
 
   function findInviteCard(kind, senderName = null) {
