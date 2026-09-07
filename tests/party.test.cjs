@@ -63,6 +63,10 @@ test("preserves the current Huntera Bestiary goal for each creature", () => {
   assert.deepEqual({ currentKills: phaseOne.currentKills, targetKills: phaseOne.targetKills, completed: phaseOne.completed }, {
     currentKills: 1168, targetKills: 2500, completed: false
   });
+  const inferredPhaseTwo = api.normalizeBestiaryStage("619", "5.000");
+  assert.deepEqual({ currentKills: inferredPhaseTwo.currentKills, targetKills: inferredPhaseTwo.targetKills, absoluteKills: inferredPhaseTwo.absoluteKills, completedPhases: inferredPhaseTwo.completedPhases }, {
+    currentKills: 619, targetKills: 5000, absoluteKills: 3119, completedPhases: 1
+  });
   const phaseTwo = api.normalizeBestiaryStage("269", "5.000", false, 1);
   assert.deepEqual({ currentKills: phaseTwo.currentKills, targetKills: phaseTwo.targetKills, absoluteKills: phaseTwo.absoluteKills, completed: phaseTwo.completed }, {
     currentKills: 269, targetKills: 5000, absoluteKills: 2769, completed: true
@@ -84,17 +88,21 @@ test("reads Huntera completed phases from the star badge", () => {
   assert.equal(api.bestiaryCompletedPhases(card), 1);
 });
 
-test("derives per-creature stage progress from wire-9", () => {
+test("derives current-phase progress from wire-9", () => {
   const api = adapter();
   const phaseOne = api.bestiaryStageProgress(2500, 1168, 0);
   assert.deepEqual({ stage: phaseOne.stage, phase: phaseOne.phase, currentKills: phaseOne.currentKills, targetKills: phaseOne.targetKills, absoluteKills: phaseOne.absoluteKills, baselineComplete: phaseOne.baselineComplete }, {
     stage: 0, phase: 1, currentKills: 1168, targetKills: 2500, absoluteKills: 1168, baselineComplete: false
   });
-  const phaseTwo = api.bestiaryStageProgress(2500, 2769, 0);
+  const phaseOneReady = api.bestiaryStageProgress(2500, 2769, 0);
+  assert.deepEqual({ stage: phaseOneReady.stage, phase: phaseOneReady.phase, currentKills: phaseOneReady.currentKills, targetKills: phaseOneReady.targetKills, absoluteKills: phaseOneReady.absoluteKills, rewardReady: phaseOneReady.rewardReady }, {
+    stage: 0, phase: 1, currentKills: 2769, targetKills: 2500, absoluteKills: 2769, rewardReady: true
+  });
+  const phaseTwo = api.bestiaryStageProgress(2500, 269, 1);
   assert.deepEqual({ stage: phaseTwo.stage, phase: phaseTwo.phase, currentKills: phaseTwo.currentKills, targetKills: phaseTwo.targetKills, absoluteKills: phaseTwo.absoluteKills, baselineComplete: phaseTwo.baselineComplete }, {
     stage: 1, phase: 2, currentKills: 269, targetKills: 5000, absoluteKills: 2769, baselineComplete: true
   });
-  const rat = api.bestiaryStageProgress(2500, 7506, 1);
+  const rat = api.bestiaryStageProgress(2500, 6, 2);
   assert.deepEqual({ stage: rat.stage, phase: rat.phase, currentKills: rat.currentKills, targetKills: rat.targetKills, absoluteKills: rat.absoluteKills, completedPhases: rat.completedPhases }, {
     stage: 2, phase: 3, currentKills: 6, targetKills: 10000, absoluteKills: 7506, completedPhases: 2
   });
@@ -108,8 +116,8 @@ test("builds a complete mixed-goal snapshot from wire-26 and accumulated wire-9 
       { id: "rat", name: "Rat", killsRequired: 2500 },
       { id: "spider", name: "Spider", killsRequired: 2500 }
     ],
-    kills: { amazon: 1168, rat: 2769, spider: 3213 },
-    stages: { rat: 0, spider: 0 }
+    kills: { amazon: 1168, rat: 269, spider: 713 },
+    stages: { rat: 1, spider: 1 }
   } });
   const snapshot = JSON.parse(JSON.stringify(api.socketBestiarySnapshot()));
   assert.equal(snapshot.length, 3);

@@ -155,8 +155,9 @@
         // wire-9: the server's live per-creature kill feed, e.g.
         // { kills: { spider: 180 }, killsRequired: 2500, completed: 1, total: 86 }.
         // The analyzer metric is premium-locked to 0, so this is the only real
-        // source of bestiary kill counts. `kills` names the creature just killed
-        // with its absolute total.
+        // source of bestiary kill counts. In the staged Bestiary, `kills` is the
+        // progress inside the current phase; `stages` tells us how many previous
+        // phases are already active.
         const payloadKills = payload && typeof payload.kills === "object" ? payload.kills : {};
         const payloadKeys = Object.keys(payloadKills);
         socketState.bestiaryKills = { ...socketState.bestiaryKills, ...payloadKills };
@@ -701,15 +702,14 @@
     return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : null;
   }
 
-  function bestiaryStageProgress(baseTarget, absoluteKills, unlockedStages = 0) {
+  function bestiaryStageProgress(baseTarget, phaseKills, unlockedStages = 0) {
     const base = bestiaryNumber(baseTarget);
-    const total = bestiaryNumber(absoluteKills);
-    const unlocked = bestiaryNumber(unlockedStages) ?? 0;
-    if (base === null || base < 1 || total === null) return null;
-    const stage = total >= base ? Math.max(0, unlocked) + 1 : 0;
+    const currentKills = bestiaryNumber(phaseKills);
+    const stage = Math.max(0, bestiaryNumber(unlockedStages) ?? 0);
+    if (base === null || base < 1 || currentKills === null) return null;
     const targetKills = base * (2 ** stage);
     const stageStart = base * ((2 ** stage) - 1);
-    const currentKills = Math.max(0, total - stageStart);
+    const total = stageStart + currentKills;
     const rewardReady = currentKills >= targetKills;
     return {
       stage,
@@ -764,9 +764,13 @@
   function normalizeBestiaryStage(currentKills, targetKills, completed = false, completedPhases = 0, baseTargetKills = 2500) {
     const current = bestiaryNumber(currentKills);
     const target = bestiaryNumber(targetKills);
-    const phases = bestiaryNumber(completedPhases) ?? 0;
+    const explicitPhases = bestiaryNumber(completedPhases) ?? 0;
     const base = bestiaryNumber(baseTargetKills) || 2500;
     if (current === null || target === null || target < 100) return null;
+    const targetRatio = target / base;
+    const targetPhase = targetRatio >= 1 ? Math.log2(targetRatio) : 0;
+    const inferredPhases = Number.isInteger(targetPhase) ? targetPhase : 0;
+    const phases = Math.max(explicitPhases, inferredPhases);
     const stageStart = base * ((2 ** phases) - 1);
     const absoluteKills = stageStart + current;
     const rewardReady = completed || current >= target;
@@ -983,17 +987,10 @@
   }
 
   async function syncBestiary() {
-    const socketEntries = socketBestiarySnapshot();
-    if (socketEntries.length) {
-      return {
-        ok: true,
-        characterName: readState().character?.name || null,
-        entries: socketEntries,
-        pages: 0,
-        closeAfterSync: false,
-        source: "huntera-bestiary-websocket"
-      };
-    }
+    // A manual sync must read the Cyclopedia. wire-9 may contain a complete
+    // looking map of current-phase counters, but it does not reliably carry the
+    // phase metadata for every historical creature. Live wire updates still
+    // keep the active creature fresh between full Cyclopedia synchronizations.
     const wasOpen = bestiaryEntryButtons().length > 0 || Boolean(bestiaryButton("bestiary"));
     const opened = await openBestiary();
     if (!opened.ok) return opened;
