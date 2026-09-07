@@ -18,14 +18,22 @@ function invitation(title, sender, members = "IACosta · Master Sorcerer", hunt 
 }
 
 function adapter(cards = [], lootControls = []) {
+  class FakeDataTransfer {
+    constructor() { this.values = new Map(); this.effectAllowed = "none"; }
+    setData(type, value) { this.values.set(type, value); }
+    getData(type) { return this.values.get(type) || ""; }
+  }
+  class FakeDragEvent {
+    constructor(type, options) { this.type = type; Object.assign(this, options); }
+  }
   const context = vm.createContext({
-    setTimeout, clearTimeout, Date, console,
+    setTimeout, clearTimeout, Date, console, DataTransfer: FakeDataTransfer, DragEvent: FakeDragEvent,
     window: { setTimeout, addEventListener() {}, postMessage() {}, getComputedStyle: () => ({ display: "block", visibility: "visible" }) },
     document: { querySelectorAll: (selector) => selector === ".party-invite" ? cards : selector === ".hunt-window .hunt-loot-auto" ? lootControls : [], querySelector: () => null }
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, lootDisposition, configuredLootPolicy,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove,
       configureFixture(fixture) {
         readState = fixture.readState;
         characterSelectionVisible = () => false;
@@ -34,6 +42,7 @@ function adapter(cards = [], lootControls = []) {
         waitForPartyMembers = fixture.waitForPartyMembers;
         setPartyTarget = fixture.setPartyTarget;
         enableSharedCosts = fixture.enableSharedCosts;
+        if (fixture.inventory) socketState.inventory = copyInventory(fixture.inventory);
       }
     };
     globalThis.GamePilotAdapters =`);
@@ -106,13 +115,43 @@ test("default loot uses the lowest sell offer and only auctions above NPC", () =
   assert.equal(api.lootDisposition(item, { found: true, sellPrices: [80] }, "default").destination, "npc");
 });
 
-test("default loot falls back to warehouse without a usable quote or NPC price", () => {
+test("default loot falls back to NPC without a quote and only stores items without NPC value", () => {
   const api = adapter();
-  assert.equal(api.lootDisposition({ npcValue: 100 }, { found: false, sellPrices: [] }, "default").destination, "warehouse");
+  assert.equal(api.lootDisposition({ npcValue: 100 }, { found: false, sellPrices: [] }, "default").destination, "npc");
   assert.equal(api.lootDisposition({ npcValue: null }, { found: true, sellPrices: [200] }, "default").destination, "warehouse");
   assert.equal(api.lootDisposition({ npcValue: 100 }, { found: true, sellPrices: [200] }, "warehouse").destination, "warehouse");
   assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "npc").destination, "npc");
   assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "ignore").destination, "ignore");
+});
+
+test("maps current Huntera backpack and satchel entries to stable slot references", () => {
+  const api = adapter();
+  api.configureFixture({
+    inventory: {
+      slots: [{ itemId: 10, name: "Dragon Ham", count: 2 }, null, { itemId: 11, name: "Halberd", count: 1 }],
+      satchel: [{ itemId: 10, name: "Dragon Ham", count: 4 }]
+    }
+  });
+  const refs = JSON.parse(JSON.stringify(api.inventoryRefsForItem("10").map(({ container, index, item }) => ({ container, index, count: item.count }))));
+  assert.deepEqual(refs, [
+    { container: "backpack", index: 0, count: 2 },
+    { container: "satchel", index: 0, count: 4 }
+  ]);
+});
+
+test("moves a Huntera inventory slot with the game's current drag payload", () => {
+  const api = adapter();
+  const events = [];
+  const source = { dispatchEvent(event) { events.push({ target: "source", event }); } };
+  const target = {
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 40, height: 40 }),
+    dispatchEvent(event) { events.push({ target: "target", event }); }
+  };
+  assert.equal(api.dispatchSlotMove(source, target, { container: "backpack", index: 3 }), true);
+  assert.deepEqual(events.map(({ target: eventTarget, event }) => [eventTarget, event.type]), [
+    ["source", "dragstart"], ["target", "dragover"], ["target", "drop"], ["source", "dragend"]
+  ]);
+  assert.equal(events[2].event.dataTransfer.getData("application/x-slot-ref"), '{"container":"backpack","index":3}');
 });
 
 test("cancelling a pending invitation aborts the wait and allows the next operation", async () => {

@@ -1542,7 +1542,7 @@
     const sellPrices = Array.isArray(quote.sellPrices) ? quote.sellPrices.filter((value) => Number.isFinite(Number(value))).map(Number) : [];
     const sellPrice = sellPrices.length ? Math.min(...sellPrices) : null;
     if (item.npcValue == null || !Number.isFinite(Number(item.npcValue))) return { destination: "warehouse", reason: "item sem preço de NPC", sellPrice };
-    if (!quote.found || sellPrice === null) return { destination: "warehouse", reason: "item sem oferta de venda no leilão", sellPrice };
+    if (!quote.found || sellPrice === null) return { destination: "npc", reason: "item sem oferta de venda no leilão; usando o valor seguro do NPC", sellPrice };
     if (sellPrice > Number(item.npcValue)) return { destination: "auction", reason: "oferta de venda maior que o NPC", sellPrice };
     return { destination: "npc", reason: "oferta de venda igual ou menor que o NPC", sellPrice };
   }
@@ -1560,6 +1560,42 @@
       grouped.set(key, current);
     }
     return [...grouped.values()];
+  }
+
+  function inventoryRefsForItem(itemId) {
+    const inventory = socketState.inventory || {};
+    const expected = String(itemId);
+    const refs = [];
+    for (const [container, items] of [["backpack", inventory.slots || []], ["satchel", inventory.satchel || []]]) {
+      items.forEach((item, index) => {
+        const currentId = item?.itemId ?? item?.item_id ?? item?.id ?? item?.typeId ?? item?.type_id;
+        if (currentId != null && String(currentId) === expected) refs.push({ container, index, item });
+      });
+    }
+    return refs;
+  }
+
+  function inventoryItemAt(ref) {
+    const inventory = socketState.inventory || {};
+    return ref.container === "satchel" ? inventory.satchel?.[ref.index] : inventory.slots?.[ref.index];
+  }
+
+  function inventoryCountForItem(itemId) {
+    return inventoryRefsForItem(itemId).reduce((total, ref) => total + Math.max(1, Number(ref.item?.count ?? ref.item?.quantity ?? ref.item?.amount ?? 1) || 1), 0);
+  }
+
+  function dispatchSlotMove(source, target, ref) {
+    if (!source || !target || typeof DragEvent !== "function" || typeof DataTransfer !== "function") return false;
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData("application/x-slot-ref", JSON.stringify({ container: ref.container, index: ref.index }));
+    dataTransfer.effectAllowed = "move";
+    const point = target.getBoundingClientRect();
+    const options = { bubbles: true, cancelable: true, dataTransfer, clientX: point.left + point.width / 2, clientY: point.top + point.height / 2 };
+    source.dispatchEvent(new DragEvent("dragstart", options));
+    target.dispatchEvent(new DragEvent("dragover", options));
+    target.dispatchEvent(new DragEvent("drop", options));
+    source.dispatchEvent(new DragEvent("dragend", options));
+    return true;
   }
 
   function buttonMatching(root, pattern, selectors = []) {
@@ -1600,22 +1636,41 @@
   async function moveItemsToWarehouse(items) {
     if (!items.length) return { stored: 0, storedItems: [], failedItems: [] };
     const tab = [...document.querySelectorAll(".trade-tab, [data-tab]")].find((entry) => visible(entry) && /depot|warehouse|storage|armazem|deposito/i.test(`${entry.dataset.tab || ""} ${normalizeItemName(entry.textContent)}`));
-    const nav = document.querySelector("#nav-depot, #nav-warehouse, #nav-storage");
+    const nav = document.querySelector(".hud-depot, #nav-depot, #nav-warehouse, #nav-storage");
     (tab || nav)?.click();
     const warehouse = await waitFor(".depot-window, .warehouse-window, .storage-window, [data-window='depot']", 3500, true);
     if (!warehouse) return { stored: 0, storedItems: [], failedItems: items.map((item) => ({ ...item, error: "Armazém indisponível" })) };
     const storedItems = [];
     const failedItems = [];
-    for (const item of items) {
-      const inventoryItem = [...document.querySelectorAll(".inventory-slot[data-item-id], .backpack-slot[data-item-id], [data-container='backpack'] [data-item-id], [data-container='satchel'] [data-item-id]")].find((entry) => String(entry.dataset.itemId) === String(item.itemId) && visible(entry));
-      if (!inventoryItem) { failedItems.push({ ...item, error: "Item não encontrado na mochila" }); continue; }
-      inventoryItem.click();
-      const deposit = buttonMatching(warehouse, /guardar|depositar|store|deposit/i, ["[data-action='deposit']", ".depot-deposit", ".warehouse-deposit"]);
-      if (!deposit) { failedItems.push({ ...item, error: "Ação de depósito indisponível" }); continue; }
-      deposit.click();
-      const confirmed = await waitUntil(() => !visible(inventoryItem) || inventoryItem.dataset.itemId !== String(item.itemId), 2500, 100);
-      if (confirmed) storedItems.push({ itemId: item.itemId, name: item.name, count: item.count });
-      else failedItems.push({ ...item, error: "O armazém não confirmou o depósito" });
+    try {
+      for (const item of items) {
+        const refs = inventoryRefsForItem(item.itemId);
+        if (!refs.length) { failedItems.push({ ...item, error: "Item não encontrado na mochila" }); continue; }
+        let storedCount = 0;
+        let itemError = null;
+        for (const ref of refs) {
+          const grid = warehouse.querySelector(ref.container === "satchel" ? ".depot-satchel-grid" : ".depot-pack-grid");
+          const source = grid?.querySelectorAll(".slot")?.[ref.index];
+          const target = [...warehouse.querySelectorAll(".depot-grid .slot")].find((slot) => !slot.draggable && slot.childElementCount === 0 && visible(slot));
+          if (!source || !source.draggable) { itemError = "Slot do item não corresponde ao inventário recebido"; break; }
+          if (!target) { itemError = "Não há espaço livre no depósito"; break; }
+          const moved = dispatchSlotMove(source, target, ref);
+          if (!moved) { itemError = "O navegador não permitiu mover o item para o depósito"; break; }
+          const confirmed = await waitUntil(() => {
+            const current = inventoryItemAt(ref);
+            const currentId = current?.itemId ?? current?.item_id ?? current?.id ?? current?.typeId ?? current?.type_id;
+            return currentId == null || String(currentId) !== String(item.itemId);
+          }, 4000, 100);
+          if (!confirmed) { itemError = "O depósito não confirmou a transferência"; break; }
+          storedCount += Math.max(1, Number(ref.item?.count ?? ref.item?.quantity ?? ref.item?.amount ?? 1) || 1);
+        }
+        if (storedCount > 0) storedItems.push({ itemId: item.itemId, name: item.name, count: storedCount });
+        if (itemError) failedItems.push({ ...item, error: itemError });
+      }
+    } finally {
+      const close = warehouse.querySelector("#depot-close") || document.querySelector("#depot-close");
+      close?.click();
+      await waitFor(".depot-window", 2500, false);
     }
     return { stored: storedItems.length, storedItems, failedItems };
   }
@@ -1623,19 +1678,25 @@
   async function sellNpcItems(shop, items) {
     let sold = 0;
     const soldItems = [];
+    const failedItems = [];
     for (const item of items) {
-      const offer = [...shop.querySelectorAll("#shop-offers .shop-offer")].find((entry) => entry.dataset.itemId === item.itemId && visible(entry));
-      if (!offer) continue;
+      const offer = [...shop.querySelectorAll("#shop-offers .shop-offer")].find((entry) => String(entry.dataset.itemId) === String(item.itemId) && visible(entry));
+      if (!offer) { failedItems.push({ ...item, error: "Item não encontrado na venda do NPC" }); continue; }
+      const beforeCount = inventoryCountForItem(item.itemId);
       offer.click();
       const transaction = await waitFor("#shop-transaction", 2500, true);
       const sellButton = transaction?.querySelector(".shop-buy");
-      if (!sellButton || !visible(sellButton) || sellButton.disabled) continue;
+      if (!sellButton || !visible(sellButton) || sellButton.disabled) { failedItems.push({ ...item, error: "Ação de venda do NPC indisponível" }); continue; }
       sellButton.click();
-      await new Promise((resolve) => window.setTimeout(resolve, 220));
+      const confirmed = await waitUntil(() => {
+        const currentOffer = [...shop.querySelectorAll("#shop-offers .shop-offer")].find((entry) => String(entry.dataset.itemId) === String(item.itemId) && visible(entry));
+        return inventoryCountForItem(item.itemId) < beforeCount || !currentOffer;
+      }, 4000, 100);
+      if (!confirmed) { failedItems.push({ ...item, error: "O NPC não confirmou a venda" }); continue; }
       sold += 1;
-      soldItems.push({ itemId: item.itemId, name: item.name, count: item.count, npcValue: item.npcValue });
+      soldItems.push({ itemId: item.itemId, name: item.name, count: beforeCount || item.count, npcValue: item.npcValue });
     }
-    return { sold, soldItems };
+    return { sold, soldItems, failedItems };
   }
 
   async function sellItems(config = {}) {
@@ -1680,12 +1741,11 @@
     const npcTargets = decisions.filter((item) => item.destination === "npc");
     const npcResult = await sellNpcItems(shop, npcTargets);
     const warehouseResult = await moveItemsToWarehouse(decisions.filter((item) => item.destination === "warehouse"));
-    const soldIds = new Set((npcResult.soldItems || []).map((item) => String(item.itemId)));
-    const npcFailed = npcTargets.filter((item) => !soldIds.has(String(item.itemId))).map((item) => ({ ...item, error: "O NPC não confirmou a venda" }));
-    const failed = [...npcFailed, ...(warehouseResult.failedItems || [])];
+    const failed = [...(npcResult.failedItems || []), ...(warehouseResult.failedItems || [])];
     const ignored = decisions.filter((item) => item.destination === "ignore").length;
-    const message = `${npcResult.sold} vendido(s) no NPC, ${auctionListed.length} ordem(ns) criada(s), ${warehouseResult.stored} item(ns) guardado(s) e ${ignored} ignorado(s)`;
-    return { ok: failed.length === 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, ignored, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { error: `${failed.length} item(ns) não puderam ser destinados` } : {}) };
+    const summary = `${npcResult.sold} vendido(s) no NPC, ${auctionListed.length} ordem(ns) criada(s), ${warehouseResult.stored} item(ns) guardado(s) e ${ignored} ignorado(s)`;
+    const message = failed.length ? `${summary}; ${failed.length} item(ns) preservado(s) por segurança` : summary;
+    return { ok: true, partial: failed.length > 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, ignored, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { warning: `${failed.length} item(ns) não puderam ser destinados e foram preservados` } : {}) };
   }
 
   async function closeStore() {
