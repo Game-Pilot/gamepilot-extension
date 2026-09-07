@@ -431,9 +431,28 @@
     return { percent: Math.round(percent * 10) / 10, currentOz: Math.round((current / 100) * 100) / 100, maxOz: Math.round((capacity / 100) * 100) / 100, source: "socket" };
   }
 
+  const imbuementItemThumbnails = new Map();
+
   function imbuementSnapshot() {
     const inventory = socketState.inventory;
     if (!inventory) return null;
+    const captureItem = (item, element) => {
+      const id = item?.itemId ?? item?.item_id ?? item?.id ?? item?.typeId ?? item?.type_id;
+      if (id == null || imbuementItemThumbnails.has(String(id)) || !element || element.classList.contains("slot-placeholder")) return;
+      const thumbnail = bestiaryThumbnail(element);
+      if (thumbnail) {
+        if (imbuementItemThumbnails.size >= 256) imbuementItemThumbnails.delete(imbuementItemThumbnails.keys().next().value);
+        imbuementItemThumbnails.set(String(id), thumbnail);
+      }
+    };
+    document.querySelectorAll("[data-equip], [data-pack], [data-satchel]").forEach((element) => {
+      const slot = element.getAttribute("data-equip");
+      const aliases = { helmet: "head", armor: "body", boots: "feet" };
+      const item = slot ? (inventory.equipment?.[slot] || inventory.equipment?.[aliases[slot]])
+        : element.hasAttribute("data-pack") ? inventory.slots?.[Number(element.getAttribute("data-pack"))]
+          : inventory.satchel?.[Number(element.getAttribute("data-satchel"))];
+      captureItem(item, element);
+    });
     const materials = new Map();
     for (const item of [...(inventory.slots || []), ...(inventory.satchel || [])].filter(Boolean)) {
       const itemId = item.itemId ?? item.item_id ?? item.id ?? item.typeId ?? item.type_id;
@@ -443,7 +462,7 @@
       materials.set(String(itemId), { itemId, name: item.name || item.itemName || item.item_name || `Item #${itemId}`, count: (previous?.count || 0) + count });
     }
     const equipment = JSON.parse(JSON.stringify(inventory.equipment || {}));
-    return { equipment, equipmentRevision: JSON.stringify(equipment), materials: [...materials.values()], observedAt: socketState.lastMessageAt };
+    return { equipment, equipmentRevision: JSON.stringify(equipment), itemThumbnails: Object.fromEntries(imbuementItemThumbnails), materials: [...materials.values()], observedAt: socketState.lastMessageAt };
   }
 
   function socketMetrics() {
@@ -2549,6 +2568,8 @@
     const applications = Array.isArray(plan.applications) ? plan.applications : [];
     const maxSpend = Number(plan.maxSpend);
     if (!applications.length) return { ok: false, error: "O plano aprovado não contém imbuements" };
+    const applicationKeys = applications.map((item) => `${item.slot}:${item.itemId || item.itemName}:${item.imbuementFamily || String(item.imbuementKey).replace(/^(basic|intricate|powerful)-/, "")}`);
+    if (new Set(applicationKeys).size !== applicationKeys.length) return { ok: false, error: "O mesmo imbuement não pode ser aplicado duas vezes na mesma peça" };
     if (!Number.isFinite(maxSpend) || maxSpend < 0) return { ok: false, error: "O plano não contém um limite de gasto válido" };
     const current = imbuementSnapshot();
     if (!current || current.equipmentRevision !== plan.equipmentRevision) return { ok: false, error: "O set equipado mudou desde a revisão. Revise novamente antes de aplicar." };
@@ -2571,7 +2592,7 @@
       const apply = buttonMatching(root, /aplicar|imbuir|apply|imbue/i, ["[data-action='apply-imbuement']", ".imbuement-apply"]);
       if (!apply) return { ok: false, error: `${application.imbuementName}: botão de aplicação não encontrado`, applied, spent };
       apply.click();
-      const confirmation = await waitFor(".imbuement-confirm, .trade-dialog, [role='dialog']", 2500, true);
+      const confirmation = await waitFor(".imbuement-confirm, [data-dialog='imbuement-confirm'], .confirm-dialog", 2500, true);
       if (!confirmation) return { ok: false, error: `${application.imbuementName}: o Huntera não apresentou a confirmação`, applied, spent };
       const displayedCost = Number(confirmation.dataset.cost ?? String(confirmation.textContent || "").match(/([\d.]+)\s*(?:gp|gold)/i)?.[1]?.replace(/\./g, "") ?? 0);
       if (!Number.isFinite(displayedCost) || spent + displayedCost > maxSpend) {
