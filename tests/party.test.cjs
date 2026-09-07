@@ -191,10 +191,34 @@ test("builds a complete mixed-goal snapshot from wire-26 and accumulated wire-9 
 
 test("captures the Huntera monster canvas without allowing oversized images", () => {
   const api = adapter();
-  const portrait = { width: 64, height: 64, toDataURL: () => "data:image/png;base64,c21hbGw=" };
-  const oversized = { width: 1920, height: 1080, toDataURL: () => `data:image/png;base64,${"a".repeat(120001)}` };
+  const visiblePixels = { data: Uint8ClampedArray.from([0, 0, 0, 255]) };
+  const portrait = { width: 64, height: 64, getContext: () => ({ getImageData: () => visiblePixels }), toDataURL: () => "data:image/png;base64,c21hbGw=" };
+  const oversized = { width: 1920, height: 1080, getContext: () => ({ getImageData: () => visiblePixels }), toDataURL: () => `data:image/png;base64,${"a".repeat(120001)}` };
   assert.equal(api.bestiaryThumbnail({ querySelectorAll: () => [portrait] }), "data:image/png;base64,c21hbGw=");
   assert.equal(api.bestiaryThumbnail({ querySelectorAll: () => [oversized] }), null);
+});
+
+test("ignores a Huntera canvas before its monster sprite is painted", () => {
+  const api = adapter();
+  const transparent = {
+    width: 64,
+    height: 64,
+    getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray(64 * 64 * 4) }) }),
+    toDataURL: () => "data:image/png;base64,dHJhbnNwYXJlbnQ="
+  };
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: () => [transparent] }), null);
+});
+
+test("captures a PNG image source when the Huntera card is not a canvas", () => {
+  const api = adapter();
+  const image = { src: "data:image/png;base64,c291cmNl", currentSrc: "data:image/png;base64,c291cmNl", complete: true, width: 64, height: 64 };
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: (selector) => selector === "canvas" ? [] : [image] }), "data:image/png;base64,c291cmNl");
+});
+
+test("captures a PNG background image when the Huntera card uses a styled visual", () => {
+  const api = adapter();
+  const element = { style: { backgroundImage: "url(\"data:image/png;base64,YmFja2dyb3VuZA==\")" } };
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: (selector) => selector === "[style]" ? [element] : [] }), "data:image/png;base64,YmFja2dyb3VuZA==");
 });
 
 test("does not use a partial wire-9 payload as a complete sync", () => {
