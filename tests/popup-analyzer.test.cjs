@@ -12,7 +12,7 @@ function harness() {
     if (!elements.has(selector)) elements.set(selector, element());
     return elements.get(selector);
   } };
-  let source = fs.readFileSync(path.join(__dirname, '../popup.js'), 'utf8');
+  let source = fs.readFileSync(path.join(__dirname, '../popup.js'), 'utf8').replace(/\r\n/g, '\n');
   source = source.slice(0, source.indexOf('$("#pair-form").addEventListener')) + source.slice(source.indexOf('const analyzerNumber'));
   source = source.replace('refreshAnalyzer();\nsetInterval(refreshAnalyzer, 2000);', '');
   const context = vm.createContext({ document, chrome: {
