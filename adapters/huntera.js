@@ -72,6 +72,11 @@
     itemValues: null,
     marketItems: null,
     bestiary: null,
+    bestiaryKills: {},
+    bestiaryStages: {},
+    bestiaryCatalog: [],
+    bestiaryReceived: false,
+    bestiaryFullSnapshot: false,
     training: null,
     messages: {}
   };
@@ -152,13 +157,32 @@
         // The analyzer metric is premium-locked to 0, so this is the only real
         // source of bestiary kill counts. `kills` names the creature just killed
         // with its absolute total.
-        const entries = payload && typeof payload.kills === "object" ? Object.entries(payload.kills) : [];
-        const [monsterKey, killCount] = entries[entries.length - 1] || [];
+        const payloadKills = payload && typeof payload.kills === "object" ? payload.kills : {};
+        const payloadKeys = Object.keys(payloadKills);
+        socketState.bestiaryKills = { ...socketState.bestiaryKills, ...payloadKills };
+        socketState.bestiaryStages = { ...socketState.bestiaryStages, ...(payload?.stages || {}) };
+        socketState.bestiaryReceived = true;
+        const expectedEntries = firstNumber(payload?.total) ?? socketState.bestiaryCatalog.length;
+        if (expectedEntries > 0 && payloadKeys.length >= expectedEntries) socketState.bestiaryFullSnapshot = true;
+        const entries = Object.entries(payloadKills);
+        const monsterKey = payload.latestMonsterKey || entries[entries.length - 1]?.[0];
+        const killCount = monsterKey ? payload.kills?.[monsterKey] : null;
         if (monsterKey) {
+          const progress = bestiaryStageProgress(
+            firstNumber(payload.killsRequired) ?? 2500,
+            firstNumber(killCount),
+            firstNumber(socketState.bestiaryStages[monsterKey]) ?? 0
+          );
           socketState.bestiary = {
             monsterKey,
-            killCount: firstNumber(killCount),
-            killsRequired: firstNumber(payload.killsRequired) ?? 2500,
+            killCount: progress?.currentKills ?? firstNumber(killCount),
+            absoluteKillCount: firstNumber(killCount),
+            killsRequired: progress?.targetKills ?? firstNumber(payload.killsRequired) ?? 2500,
+            baseKillsRequired: firstNumber(payload.killsRequired) ?? 2500,
+            stage: progress?.stage ?? 0,
+            phase: progress?.phase ?? 1,
+            completedPhases: progress?.completedPhases ?? 0,
+            rewardReady: progress?.rewardReady === true,
             completed: firstNumber(payload.completed),
             total: firstNumber(payload.total),
             at: socketState.lastMessageAt
@@ -166,6 +190,9 @@
         }
         break;
       }
+      case "cyclopedia-catalog":
+        socketState.bestiaryCatalog = Array.isArray(payload.monsters) ? payload.monsters : [];
+        break;
       case "training-update":
         // wire-96 is independent from hunts/bestiary. Huntera keeps training
         // active while the character remains in the training ground and sends
@@ -270,7 +297,15 @@
     if (event.data.kind === "message") applySocketMessage(event.data.message);
     else if (event.data.kind === "connection") {
       socketState.connected = event.data.status === "open";
-      if (socketState.connected) socketState.socketUrl = event.data.socketUrl || socketState.socketUrl;
+      if (socketState.connected) {
+        socketState.socketUrl = event.data.socketUrl || socketState.socketUrl;
+        socketState.bestiary = null;
+        socketState.bestiaryKills = {};
+        socketState.bestiaryStages = {};
+        socketState.bestiaryCatalog = [];
+        socketState.bestiaryReceived = false;
+        socketState.bestiaryFullSnapshot = false;
+      }
     }
     else if (event.data.kind === "snapshot") applySocketSnapshot(event.data.snapshot);
   });
@@ -666,11 +701,104 @@
     return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : null;
   }
 
+  function bestiaryStageProgress(baseTarget, absoluteKills, unlockedStages = 0) {
+    const base = bestiaryNumber(baseTarget);
+    const total = bestiaryNumber(absoluteKills);
+    const unlocked = bestiaryNumber(unlockedStages) ?? 0;
+    if (base === null || base < 1 || total === null) return null;
+    const stage = total >= base ? Math.max(0, unlocked) + 1 : 0;
+    const targetKills = base * (2 ** stage);
+    const stageStart = base * ((2 ** stage) - 1);
+    const currentKills = Math.max(0, total - stageStart);
+    const rewardReady = currentKills >= targetKills;
+    return {
+      stage,
+      phase: stage + 1,
+      completedPhases: stage,
+      currentKills,
+      targetKills,
+      absoluteKills: total,
+      baselineTargetKills: base,
+      baselineComplete: total >= base,
+      rewardReady,
+      overflowKills: rewardReady ? currentKills - targetKills : 0,
+      completed: total >= base
+    };
+  }
+
+  function socketBestiarySnapshot() {
+    const catalog = Array.isArray(socketState.bestiaryCatalog) ? socketState.bestiaryCatalog : [];
+    // wire-9 normally contains only the creature that just died. It is safe to
+    // use it as a complete sync only when Huntera explicitly sent enough keys
+    // to cover the catalog in one payload. Partial wire updates are still used
+    // by bestiaryLive, but must never turn missing historical entries into zero.
+    if (!socketState.bestiaryReceived || !socketState.bestiaryFullSnapshot || !catalog.length) return [];
+    return catalog.map((monster) => {
+      const monsterKey = String(monster?.id ?? monster?.monsterKey ?? monster?.key ?? "");
+      const name = String(monster?.name || "").trim();
+      if (!monsterKey || !name) return null;
+      const baseTarget = bestiaryNumber(monster?.killsRequired) || 2500;
+      const progress = bestiaryStageProgress(
+        baseTarget,
+        socketState.bestiaryKills[monsterKey] ?? 0,
+        socketState.bestiaryStages[monsterKey] ?? 0
+      );
+      return progress ? {
+        name,
+        monsterKey,
+        currentKills: progress.currentKills,
+        targetKills: progress.targetKills,
+        completed: progress.completed,
+        absoluteKills: progress.absoluteKills,
+        stage: progress.stage,
+        phase: progress.phase,
+        completedPhases: progress.completedPhases,
+        baselineTargetKills: progress.baselineTargetKills,
+        baselineComplete: progress.baselineComplete,
+        rewardReady: progress.rewardReady,
+        overflowKills: progress.overflowKills
+      } : null;
+    }).filter(Boolean);
+  }
+
+  function normalizeBestiaryStage(currentKills, targetKills, completed = false, completedPhases = 0, baseTargetKills = 2500) {
+    const current = bestiaryNumber(currentKills);
+    const target = bestiaryNumber(targetKills);
+    const phases = bestiaryNumber(completedPhases) ?? 0;
+    const base = bestiaryNumber(baseTargetKills) || 2500;
+    if (current === null || target === null || target < 100) return null;
+    const stageStart = base * ((2 ** phases) - 1);
+    const absoluteKills = stageStart + current;
+    const rewardReady = completed || current >= target;
+    return {
+      currentKills: current,
+      targetKills: target,
+      completed: absoluteKills >= base,
+      absoluteKills,
+      stage: phases,
+      phase: phases + 1,
+      completedPhases: phases,
+      baselineTargetKills: base,
+      baselineComplete: absoluteKills >= base,
+      rewardReady,
+      overflowKills: rewardReady ? Math.max(0, current - target) : 0
+    };
+  }
+
+  function bestiaryCompletedPhases(card) {
+    const badge = card.querySelector("[class*='stage'], [class*='tier'], [class*='badge'], [class*='star']");
+    const values = [badge?.textContent, card.textContent].filter(Boolean);
+    for (const value of values) {
+      const match = String(value).replace(/\s+/g, " ").match(/[×x]\s*(\d+)/i);
+      if (match) return Number(match[1]);
+    }
+    return 0;
+  }
+
   function bestiaryEntryButtons() {
-    // Preferred: the Cyclopedia card layout. A completed entry shows
-    // ".cyc-entry-count.done" (e.g. "✓ Concluída") with no numeric count, so the
-    // old text-only parse skipped it — that is why finishing a creature never
-    // advanced the bestiary. Detect completion and report it as full progress.
+    // Preferred: the Cyclopedia card layout. Newer Huntera versions retain the
+    // numeric stage progress even for completed entries, so parse it before
+    // falling back to the legacy "Concluída"-only representation.
     const cards = [...document.querySelectorAll(".cyc-entry-card")].filter(visible);
     if (cards.length) {
       return cards.map((button) => {
@@ -680,12 +808,17 @@
         const countText = countEl?.textContent?.replace(/\s+/g, " ").trim() || "";
         const match = countText.match(/([\d.,]+)\s*\/\s*([\d.,]+)/);
         const done = countEl?.classList.contains("done") || /conclu|complet|✓/i.test(countText);
-        if (done) return { button, name, currentKills: 2500, targetKills: 2500, completed: true };
-        if (!match) return null;
-        const currentKills = bestiaryNumber(match[1]);
-        const targetKills = bestiaryNumber(match[2]);
-        if (currentKills === null || targetKills === null || targetKills < 100) return null;
-        return { button, name, currentKills, targetKills };
+        const completedPhases = bestiaryCompletedPhases(button);
+        if (match) {
+          const progress = normalizeBestiaryStage(match[1], match[2], done, completedPhases);
+          return progress ? { button, name, ...progress } : null;
+        }
+        if (done) {
+          const phases = Math.max(1, completedPhases);
+          const progress = normalizeBestiaryStage(2500, 2500, true, phases - 1);
+          return progress ? { button, name, ...progress } : null;
+        }
+        return null;
       }).filter(Boolean);
     }
     // Fallback for any other layout: parse "Name X / Y" from the button text.
@@ -693,10 +826,8 @@
       const text = button.textContent?.replace(/\s+/g, " ").trim() || "";
       const match = text.match(/^(.+?)\s+([\d.,]+)\s*\/\s*([\d.,]+)$/);
       if (!match) return null;
-      const currentKills = bestiaryNumber(match[2]);
-      const targetKills = bestiaryNumber(match[3]);
-      if (currentKills === null || targetKills === null || targetKills < 100) return null;
-      return { button, name: match[1].trim(), currentKills, targetKills };
+      const progress = normalizeBestiaryStage(match[2], match[3], false, bestiaryCompletedPhases(button));
+      return progress ? { button, name: match[1].trim(), ...progress } : null;
     }).filter(Boolean);
   }
 
@@ -841,6 +972,17 @@
   }
 
   async function syncBestiary() {
+    const socketEntries = socketBestiarySnapshot();
+    if (socketEntries.length) {
+      return {
+        ok: true,
+        characterName: readState().character?.name || null,
+        entries: socketEntries,
+        pages: 0,
+        closeAfterSync: false,
+        source: "huntera-bestiary-websocket"
+      };
+    }
     const wasOpen = bestiaryEntryButtons().length > 0 || Boolean(bestiaryButton("bestiary"));
     const opened = await openBestiary();
     if (!opened.ok) return opened;
@@ -852,7 +994,7 @@
     if (numberedPages.length >= 2 && bestiaryPageButton(numberedPages[0])) {
       const collectCurrentPage = () => {
         for (const entry of bestiaryEntryButtons()) {
-          entries.set(normalizeItemName(entry.name), { name: entry.name, currentKills: entry.currentKills, targetKills: entry.targetKills });
+          entries.set(normalizeItemName(entry.name), { ...entry, button: undefined });
         }
         pages += 1;
       };
@@ -883,7 +1025,7 @@
       if (visitedPages.has(pageKey)) break;
       visitedPages.add(pageKey);
       for (const entry of bestiaryEntryButtons()) {
-        entries.set(normalizeItemName(entry.name), { name: entry.name, currentKills: entry.currentKills, targetKills: entry.targetKills });
+        entries.set(normalizeItemName(entry.name), { ...entry, button: undefined });
       }
       const next = bestiaryNextButton();
       if (!next || next.disabled || next.getAttribute("aria-disabled") === "true" || next.classList.contains("disabled")) break;

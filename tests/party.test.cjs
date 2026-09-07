@@ -33,7 +33,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot,
       configureFixture(fixture) {
         readState = fixture.readState;
         characterSelectionVisible = () => false;
@@ -43,12 +43,82 @@ function adapter(cards = [], lootControls = []) {
         setPartyTarget = fixture.setPartyTarget;
         enableSharedCosts = fixture.enableSharedCosts;
         if (fixture.inventory) socketState.inventory = copyInventory(fixture.inventory);
+        if (fixture.bestiarySocket) {
+          socketState.bestiaryCatalog = fixture.bestiarySocket.catalog || [];
+          socketState.bestiaryKills = fixture.bestiarySocket.kills || {};
+          socketState.bestiaryStages = fixture.bestiarySocket.stages || {};
+          socketState.bestiaryReceived = fixture.bestiarySocket.received !== false;
+          socketState.bestiaryFullSnapshot = fixture.bestiarySocket.fullSnapshot !== false;
+        }
       }
     };
     globalThis.GamePilotAdapters =`);
   vm.runInContext(source, context);
   return context.testAdapter;
 }
+
+test("preserves the current Huntera Bestiary goal for each creature", () => {
+  const api = adapter();
+  const phaseOne = api.normalizeBestiaryStage("1.168", "2.500");
+  assert.deepEqual({ currentKills: phaseOne.currentKills, targetKills: phaseOne.targetKills, completed: phaseOne.completed }, {
+    currentKills: 1168, targetKills: 2500, completed: false
+  });
+  const phaseTwo = api.normalizeBestiaryStage("269", "5.000", false, 1);
+  assert.deepEqual({ currentKills: phaseTwo.currentKills, targetKills: phaseTwo.targetKills, absoluteKills: phaseTwo.absoluteKills, completed: phaseTwo.completed }, {
+    currentKills: 269, targetKills: 5000, absoluteKills: 2769, completed: true
+  });
+  const ready = api.normalizeBestiaryStage("5.000", "5.000", true, 1);
+  assert.deepEqual({ currentKills: ready.currentKills, targetKills: ready.targetKills, absoluteKills: ready.absoluteKills, rewardReady: ready.rewardReady }, {
+    currentKills: 5000, targetKills: 5000, absoluteKills: 7500, rewardReady: true
+  });
+});
+
+test("derives per-creature stage progress from wire-9", () => {
+  const api = adapter();
+  const phaseOne = api.bestiaryStageProgress(2500, 1168, 0);
+  assert.deepEqual({ stage: phaseOne.stage, phase: phaseOne.phase, currentKills: phaseOne.currentKills, targetKills: phaseOne.targetKills, absoluteKills: phaseOne.absoluteKills, baselineComplete: phaseOne.baselineComplete }, {
+    stage: 0, phase: 1, currentKills: 1168, targetKills: 2500, absoluteKills: 1168, baselineComplete: false
+  });
+  const phaseTwo = api.bestiaryStageProgress(2500, 2769, 0);
+  assert.deepEqual({ stage: phaseTwo.stage, phase: phaseTwo.phase, currentKills: phaseTwo.currentKills, targetKills: phaseTwo.targetKills, absoluteKills: phaseTwo.absoluteKills, baselineComplete: phaseTwo.baselineComplete }, {
+    stage: 1, phase: 2, currentKills: 269, targetKills: 5000, absoluteKills: 2769, baselineComplete: true
+  });
+  const rat = api.bestiaryStageProgress(2500, 7506, 1);
+  assert.deepEqual({ stage: rat.stage, phase: rat.phase, currentKills: rat.currentKills, targetKills: rat.targetKills, absoluteKills: rat.absoluteKills, completedPhases: rat.completedPhases }, {
+    stage: 2, phase: 3, currentKills: 6, targetKills: 10000, absoluteKills: 7506, completedPhases: 2
+  });
+});
+
+test("builds a complete mixed-goal snapshot from wire-26 and accumulated wire-9 data", () => {
+  const api = adapter();
+  api.configureFixture({ bestiarySocket: {
+    catalog: [
+      { id: "amazon", name: "Amazon", killsRequired: 2500 },
+      { id: "rat", name: "Rat", killsRequired: 2500 },
+      { id: "spider", name: "Spider", killsRequired: 2500 }
+    ],
+    kills: { amazon: 1168, rat: 2769, spider: 3213 },
+    stages: { rat: 0, spider: 0 }
+  } });
+  const snapshot = JSON.parse(JSON.stringify(api.socketBestiarySnapshot()));
+  assert.equal(snapshot.length, 3);
+  assert.deepEqual(snapshot.map(({ name, currentKills, targetKills, absoluteKills, phase, baselineComplete }) => ({ name, currentKills, targetKills, absoluteKills, phase, baselineComplete })), [
+    { name: "Amazon", currentKills: 1168, targetKills: 2500, absoluteKills: 1168, phase: 1, baselineComplete: false },
+    { name: "Rat", currentKills: 269, targetKills: 5000, absoluteKills: 2769, phase: 2, baselineComplete: true },
+    { name: "Spider", currentKills: 713, targetKills: 5000, absoluteKills: 3213, phase: 2, baselineComplete: true }
+  ]);
+});
+
+test("does not use a partial wire-9 payload as a complete sync", () => {
+  const api = adapter();
+  api.configureFixture({ bestiarySocket: {
+    catalog: [{ id: "rat", name: "Rat", killsRequired: 2500 }, { id: "spider", name: "Spider", killsRequired: 2500 }],
+    kills: { rat: 7506 },
+    stages: { rat: 1 },
+    fullSnapshot: false
+  } });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.socketBestiarySnapshot())), []);
+});
 
 for (const title of ["Party invitation", "Convite de party", "Convite para o grupo"]) {
   test(`recognizes ${title} with IACosta as sender and member`, () => {

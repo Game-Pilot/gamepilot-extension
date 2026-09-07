@@ -14,6 +14,7 @@
     8: "battle-settings-update",
     11: "capacity-overflow",
     14: "coins",
+    26: "cyclopedia-catalog",
     29: "depot-update",
     30: "experience-gain",
     46: "hunt-leave-pending",
@@ -149,7 +150,21 @@
 
   function record(message) {
     const receivedAt = now();
-    const entry = { ...message, receivedAt };
+    let entry = { ...message, receivedAt };
+    if (entry.type === "bestiary-progress") {
+      const previous = latest.messages[entry.type]?.payload || {};
+      const updatedKeys = Object.keys(entry.payload?.kills || {});
+      entry = {
+        ...entry,
+        payload: {
+          ...previous,
+          ...(entry.payload || {}),
+          kills: { ...(previous.kills || {}), ...(entry.payload?.kills || {}) },
+          stages: { ...(previous.stages || {}), ...(entry.payload?.stages || {}) },
+          latestMonsterKey: updatedKeys[updatedKeys.length - 1] || previous.latestMonsterKey || null
+        }
+      };
+    }
     latest.lastMessageAt = receivedAt;
     latest.lastMessageType = entry.type;
     latest.messages[entry.type] = entry;
