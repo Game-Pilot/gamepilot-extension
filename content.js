@@ -154,6 +154,13 @@ async function handleCommand(command, commandId, payload = {}) {
       result = configured.ok ? await adapter?.startHunt?.(payload) || result : configured;
       if (configured.ok && (configured.configured || configured.skipped?.length)) await sendEvent({ type: "actions.configured", message: `${configured.configured || 0} ação(ões) configurada(s)${configured.skipped?.length ? `; ${configured.skipped.length} indisponível(is) ignorada(s)` : ""}`, details: { configured: configured.configured || 0, skipped: configured.skipped || [], actions: automationActions } });
       if (result.ok) { mode = "hunting"; recoveryNoticeSent = false; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : payload.resume ? "Caçada retomada após reconexão" : "Caçada iniciada", details: { payload, reconnected: Boolean(payload.resume) } }); }
+    } else if (command === "configure-loot") {
+      showBanner("sincronizando gestão de loot da conta");
+      result = await adapter?.configureAccountLoot?.(payload.loot || {}) || result;
+      if (result.ok) {
+        automationPayload = { ...automationPayload, loot: payload.loot || {} };
+        await sendEvent({ type: "loot.configured", message: "Gestão de loot sincronizada nesta aba", details: { ...result, source: payload.source || "command" } });
+      }
     } else if (command === "configure-actions") {
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       showBanner("atualizando ações do personagem");

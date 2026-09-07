@@ -4,6 +4,8 @@ Extensão Manifest V3 do MVP. Ela conecta uma aba do Huntera ao GamePilot, envia
 
 O adaptador Huntera detecta personagem, vocação, level, vida, mana, experiência, stamina, gold, capacidade, métricas do analisador e estado da caçada. Os comandos do MVP são iniciar, parar/retornar, abrir loja e destinar o loot conforme a política compartilhada pela conta: ignorar a coleta, guardar no armazém, vender no NPC ou comparar automaticamente com o leilão.
 
+A configuração global de loot é aplicada antes de entrar em qualquer caçada e sincronizada por comando em todas as abas conectadas quando for alterada, inclusive durante uma caçada ativa.
+
 Se o botão não existir ou a tela não confirmar a ação, a extensão reporta falha para o painel e interrompe o ciclo.
 
 ## Carregar localmente

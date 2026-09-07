@@ -29,11 +29,11 @@ function adapter(cards = [], lootControls = []) {
   const context = vm.createContext({
     setTimeout, clearTimeout, Date, console, DataTransfer: FakeDataTransfer, DragEvent: FakeDragEvent,
     window: { setTimeout, addEventListener() {}, postMessage() {}, getComputedStyle: () => ({ display: "block", visibility: "visible" }) },
-    document: { querySelectorAll: (selector) => selector === ".party-invite" ? cards : selector === ".hunt-window .hunt-loot-auto" ? lootControls : [], querySelector: () => null }
+    document: { querySelectorAll: (selector) => selector === ".party-invite" ? cards : selector.includes(".hunt-loot-auto") ? lootControls : [], querySelector: () => null }
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryRefsForItem, dispatchSlotMove,
       configureFixture(fixture) {
         readState = fixture.readState;
         characterSelectionVisible = () => false;

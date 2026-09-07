@@ -917,17 +917,32 @@
     return closed ? { ok: true } : { ok: false, error: "O Bestiary não fechou após a sincronização" };
   }
 
-  async function configureLoot(hunt = {}, accountLoot = {}) {
-    await waitUntil(() => document.querySelectorAll(".hunt-window .hunt-loot-auto").length > 0, 1500);
-    const controls = [...document.querySelectorAll(".hunt-window .hunt-loot-auto")].filter((control) => !control.disabled && visible(control.closest(".hunt-loot-entry")));
-    if (!controls.length) return { ok: true, configured: 0, changed: 0 };
+  function availableLootControls() {
+    return [...document.querySelectorAll(".hunt-loot-auto, [data-action='auto-loot'] input[type='checkbox']")]
+      .filter((control) => !control.disabled && visible(control.closest(".hunt-loot-entry, .auto-loot-entry, [data-loot-item]")));
+  }
+
+  async function revealLootControls() {
+    if (availableLootControls().length) return true;
+    const direct = document.querySelector("#nav-auto-loot, [data-page='auto-loot'], [data-tab='loot']");
+    const fallback = [...document.querySelectorAll("button")].find((button) => visible(button) && /auto.?loot|loot automatico|configurar loot/i.test(normalizeItemName(button.textContent || button.getAttribute("aria-label"))));
+    (direct || fallback)?.click();
+    return waitUntil(() => availableLootControls().length > 0, 2500, 100);
+  }
+
+  async function configureLoot(hunt = {}, accountLoot = {}, requireControls = false) {
+    await revealLootControls();
+    const controls = availableLootControls();
+    if (!controls.length) return requireControls
+      ? { ok: false, error: "Os controles de auto-loot não estão disponíveis nesta tela" }
+      : { ok: true, configured: 0, changed: 0 };
     const keys = new Set((Array.isArray(hunt.lootItemKeys) ? hunt.lootItemKeys : []).map((key) => String(key)));
     const configured = hunt.lootConfigured === true || keys.size > 0;
     const accountConfigured = Number(accountLoot.version) >= 1 || Array.isArray(accountLoot.items);
     let changed = 0;
     for (const control of controls) {
-      const entry = control.closest(".hunt-loot-entry");
-      const name = entry?.querySelector(".hunt-loot-name")?.textContent?.trim() || "";
+      const entry = control.closest(".hunt-loot-entry, .auto-loot-entry, [data-loot-item]");
+      const name = entry?.querySelector(".hunt-loot-name, .auto-loot-name, [data-item-name]")?.textContent?.trim() || entry?.dataset.itemName || "";
       const baseKey = itemKeyFromName(name);
       const itemId = control.dataset.itemId || entry?.dataset.itemId || "";
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
@@ -936,6 +951,10 @@
       if (control.checked !== desired) { control.click(); changed += 1; }
     }
     return { ok: true, configured: controls.length, changed };
+  }
+
+  async function configureAccountLoot(accountLoot = {}) {
+    return configureLoot({}, accountLoot, true);
   }
 
   function tierName(element) {
@@ -1406,7 +1425,7 @@
     await new Promise((resolve) => window.setTimeout(resolve, 120));
     const pull = await selectPullTier(hunt.pullTier);
     if (!pull.ok) return pull;
-    const loot = await configureLoot(hunt, payload.loot || {});
+    const loot = await configureLoot(hunt, payload.loot || {}, Number(payload.loot?.version) >= 1);
     if (!loot.ok) return loot;
     return { ok: true, entry, pull, loot, hunt };
   }
@@ -1439,6 +1458,11 @@
       if (!selected.ok) return selected;
     }
     if (readState().inHunt) return { ok: true, alreadyStarted: true, team: true };
+    // Followers receive their own command before the leader starts the team.
+    // Prepare their hunt selection too, so account auto-loot is applied before
+    // accepting the invitation instead of inheriting stale character settings.
+    const prepared = await prepareHuntSelection(payload);
+    if (!prepared.ok && !prepared.alreadyStarted) return prepared;
     const received = await waitUntil(() => Boolean(findInviteCard("team")), 60000, 150);
     if (!received || !clickInviteAction(findInviteCard("team"), true)) return { ok: false, error: "O convite para caçar com o time não chegou" };
     const started = await waitForHuntStarted(70000);
@@ -1757,5 +1781,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, configureAccountLoot, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();
