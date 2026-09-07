@@ -58,7 +58,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, applySocketMessage, socketCreaturesOnScreen,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -73,6 +73,10 @@ function adapter(cards = [], lootControls = []) {
         setPartyTarget = fixture.setPartyTarget;
         enableSharedCosts = fixture.enableSharedCosts;
         if (fixture.inventory) socketState.inventory = copyInventory(fixture.inventory);
+        if (fixture.socketMessages) {
+          socketState.connected = true;
+          for (const message of fixture.socketMessages) applySocketMessage({ ...message, receivedAt: new Date().toISOString() });
+        }
         if (fixture.bestiarySocket) {
           socketState.bestiaryCatalog = fixture.bestiarySocket.catalog || [];
           socketState.bestiaryKills = fixture.bestiarySocket.kills || {};
@@ -86,6 +90,25 @@ function adapter(cards = [], lootControls = []) {
   vm.runInContext(source, context);
   return context.testAdapter;
 }
+
+test("tracks only visible monsters from Huntera creature socket events", () => {
+  const api = adapter();
+  api.configureFixture({ socketMessages: [
+    { type: "creature-resync", payload: { creatures: [
+      { id: 1, kind: "player", name: "Namiz" },
+      { id: 2, kind: "monster", name: "Dragon", healthPercent: 80 },
+      { id: 3, kind: "npc", name: "Guide" }
+    ] } },
+    { type: "creature-appear", payload: { creature: { id: 4, kind: "monster", name: "Dragon Lord", healthPercent: 100 } } },
+    { type: "creature-disappear", payload: { id: 2 } }
+  ] });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.socketCreaturesOnScreen())), {
+    count: 1,
+    monsters: [{ id: 4, name: "Dragon Lord", healthPercent: 100 }],
+    source: "socket",
+    observedAt: api.socketCreaturesOnScreen().observedAt
+  });
+});
 
 test("preserves the current Huntera Bestiary goal for each creature", () => {
   const api = adapter();
@@ -252,6 +275,37 @@ test("ignore policy disables collection while other account policies enable it",
   assert.equal(result.changed, 2);
   assert.equal(ignored.checked, false);
   assert.equal(kept.checked, true);
+});
+
+test("waits for Huntera to persist ignored loot before confirming", async () => {
+  const entry = { hidden: false, dataset: { itemId: "3583" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
+  const ignored = { disabled: false, checked: true, dataset: { itemId: "3583" }, closest: () => entry,
+    click() { this.checked = false; } };
+  const api = adapter([], [ignored]);
+  api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [] } });
+  let settled = false;
+  const pending = api.configureLoot({}, { version: 1, items: [
+    { externalItemId: "3583", name: "Dragon Ham", policy: "ignore" }
+  ] }).then((result) => { settled = true; return result; });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.equal(settled, false);
+  api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [3583] } });
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(ignored.checked, false);
+});
+
+test("fails when Huntera does not persist an ignored item", async () => {
+  const entry = { hidden: false, dataset: { itemId: "3583" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
+  const ignored = { disabled: false, checked: true, dataset: { itemId: "3583" }, closest: () => entry,
+    click() { this.checked = false; } };
+  const api = adapter([], [ignored]);
+  api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [] } });
+  const result = await api.configureLoot({}, { version: 1, items: [
+    { externalItemId: "3583", name: "Dragon Ham", policy: "ignore" }
+  ] });
+  assert.equal(result.ok, false);
+  assert.deepEqual([...result.failed], ["Dragon Ham"]);
 });
 
 test("loot synchronization fails when Huntera reverts an ignored item's checkbox", async () => {

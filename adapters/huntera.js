@@ -69,6 +69,11 @@
     huntPending: null,
     huntLeavePending: null,
     actionBar: null,
+    autoLootDisabledItemIds: null,
+    ammoSelection: { arrow: null, bolt: null },
+    creatures: new Map(),
+    creaturesReceived: false,
+    playerId: null,
     itemValues: null,
     marketItems: null,
     bestiary: null,
@@ -148,9 +153,36 @@
       case "coins": socketState.coins = firstNumber(payload.balance); break;
       case "hunt-pending": socketState.huntPending = payload; socketState.phase = "starting"; break;
       case "hunt-leave-pending": socketState.huntLeavePending = payload; socketState.phase = payload.remainingMs === null ? "idle" : "returning"; break;
-      case "instance-enter": socketState.phase = "hunting"; break;
-      case "player-died": socketState.phase = "idle"; break;
+      case "instance-enter": socketState.phase = "hunting"; socketState.creatures.clear(); socketState.creaturesReceived = false; break;
+      case "player-died": socketState.phase = "idle"; socketState.creatures.clear(); socketState.creaturesReceived = false; break;
       case "action-bar-update": socketState.actionBar = payload; break;
+      case "auto-loot-update":
+        socketState.autoLootDisabledItemIds = new Set(
+          (Array.isArray(payload.disabledItemIds) ? payload.disabledItemIds : [])
+            .map(Number)
+            .filter((itemId) => Number.isInteger(itemId) && itemId > 0)
+        );
+        break;
+      case "ammo-selection": socketState.ammoSelection = { arrow: firstNumber(payload.arrow), bolt: firstNumber(payload.bolt) }; break;
+      case "welcome": socketState.playerId = firstNumber(payload.playerId); break;
+      case "creature-appear":
+        if (payload.creature?.id != null) {
+          socketState.creatures.set(payload.creature.id, payload.creature);
+          socketState.creaturesReceived = true;
+        }
+        break;
+      case "creature-disappear":
+        if (payload.id != null) {
+          socketState.creatures.delete(payload.id);
+          socketState.creaturesReceived = true;
+        }
+        break;
+      case "creature-resync":
+        if (Array.isArray(payload.creatures)) {
+          socketState.creatures = new Map(payload.creatures.map((creature) => [creature.id, creature]));
+          socketState.creaturesReceived = true;
+        }
+        break;
       case "bestiary-progress": {
         // wire-9: the server's live per-creature kill feed, e.g.
         // { kills: { spider: 180 }, killsRequired: 2500, completed: 1, total: 86 }.
@@ -218,6 +250,42 @@
     socketState.connected = Boolean(snapshot.connected);
     socketState.socketUrl = snapshot.socketUrl || socketState.socketUrl;
     for (const message of Object.values(snapshot.messages || {}).sort((left, right) => Date.parse(left?.receivedAt || "") - Date.parse(right?.receivedAt || ""))) applySocketMessage(message);
+    if (snapshot.creaturesReceived === true && Array.isArray(snapshot.creatures)) {
+      socketState.creatures = new Map(snapshot.creatures.map((creature) => [creature.id, creature]));
+      socketState.creaturesReceived = true;
+    }
+    socketState.playerId = firstNumber(snapshot.playerId, socketState.playerId);
+  }
+
+  function socketCreaturesOnScreen() {
+    if (!socketFresh() || !socketState.creaturesReceived) return null;
+    const monsters = [...socketState.creatures.values()].filter((creature) => creature?.kind === "monster");
+    return {
+      count: monsters.length,
+      monsters: monsters.map((creature) => ({ id: creature.id, name: creature.name || null, healthPercent: firstNumber(creature.healthPercent) })),
+      source: "socket",
+      observedAt: socketState.lastMessageAt
+    };
+  }
+
+  async function selectAmmo(itemId, kind = "arrow") {
+    const desired = Number(itemId);
+    if (!Number.isInteger(desired) || desired <= 0 || !["arrow", "bolt"].includes(kind)) return { ok: false, error: "Munição inválida" };
+    if (firstNumber(socketState.ammoSelection?.[kind]) === desired) return { ok: true, itemId: desired, alreadySelected: true };
+    const requestId = globalThis.crypto?.randomUUID?.() || `ammo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let rejected = null;
+    const onResult = (event) => {
+      if (event.source !== window || event.data?.source !== "gamepilot-huntera-socket" || event.data.kind !== "command-result" || event.data.requestId !== requestId) return;
+      if (!event.data.ok) rejected = event.data.error || "O Huntera recusou a troca de munição";
+    };
+    window.addEventListener("message", onResult);
+    window.postMessage({ source: "gamepilot-huntera-content", type: "socket-command", requestId, command: "select-ammo", payload: { itemId: desired } }, "*");
+    const confirmed = await waitUntil(() => firstNumber(socketState.ammoSelection?.[kind]) === desired || rejected, 3000, 50);
+    window.removeEventListener("message", onResult);
+    if (rejected) return { ok: false, error: rejected };
+    return confirmed && firstNumber(socketState.ammoSelection?.[kind]) === desired
+      ? { ok: true, itemId: desired }
+      : { ok: false, error: "O Huntera não confirmou a troca de munição" };
   }
 
   function socketBackpack() {
@@ -306,6 +374,10 @@
         socketState.bestiaryCatalog = [];
         socketState.bestiaryReceived = false;
         socketState.bestiaryFullSnapshot = false;
+        socketState.creatures = new Map();
+        socketState.creaturesReceived = false;
+        socketState.playerId = null;
+        socketState.autoLootDisabledItemIds = null;
       }
     }
     else if (event.data.kind === "snapshot") applySocketSnapshot(event.data.snapshot);
@@ -374,6 +446,13 @@
       gold: socketGold ?? number(firstVisible("#header-gold")?.textContent), coins: socketCoins ?? analyzerNumber(coinsElement?.textContent),
       backpack, metrics: { ...readLootMetrics(), ...socketMetricsValue },
       bestiaryLive: socketFresh() ? socketState.bestiary : null,
+      creaturesOnScreen: socketCreaturesOnScreen(),
+      ammunition: {
+        kind: socketInventory?.equipment?.shield ? null : socketInventory?.equipment?.weapon?.ammoType || null,
+        selectedItemId: firstNumber(socketState.ammoSelection?.[socketInventory?.equipment?.weapon?.ammoType]),
+        arrow: firstNumber(socketState.ammoSelection?.arrow),
+        bolt: firstNumber(socketState.ammoSelection?.bolt)
+      },
       training: socketTraining(),
       party,
       target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null, strategy: party.targetStrategy, label: party.targetLabel },
@@ -1130,6 +1209,7 @@
     const keys = new Set((Array.isArray(hunt.lootItemKeys) ? hunt.lootItemKeys : []).map((key) => String(key)));
     const configured = hunt.lootConfigured === true || keys.size > 0;
     const accountConfigured = Number(accountLoot.version) >= 1 || Array.isArray(accountLoot.items);
+    const serverStateAvailable = socketState.autoLootDisabledItemIds instanceof Set;
     let changed = 0;
     const expected = [];
     for (const control of controls) {
@@ -1138,19 +1218,29 @@
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
       const policy = configuredLootPolicy(accountLoot, { itemId, name });
       const desired = accountConfigured ? policy !== "ignore" : configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
-      expected.push({ identity: lootControlIdentity(control), desired, name: name || String(itemId) || "item desconhecido" });
+      expected.push({ identity: lootControlIdentity(control), itemId: firstNumber(itemId), desired, name: name || String(itemId) || "item desconhecido" });
       if (control.checked !== desired && setLootControlChecked(control, desired)) changed += 1;
     }
-    // Give controlled components time to rerender, then confirm against the
-    // current DOM rather than stale checkbox references.
-    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    // The checkbox changes synchronously, but Huntera persists auto-loot over
+    // the game socket. Starting before auto-loot-update arrives can use the
+    // previous server-side list even though the UI already looks correct.
+    await new Promise((resolve) => window.setTimeout(resolve, serverStateAvailable && changed ? 100 : 250));
     const confirmed = await waitUntil(() => {
       const current = new Map(availableLootControls().map((control) => [lootControlIdentity(control), control]));
-      return expected.every(({ identity, desired }) => current.get(identity)?.checked === desired);
-    }, 1000, 50);
+      const domConfirmed = expected.every(({ identity, desired }) => current.get(identity)?.checked === desired);
+      if (!domConfirmed || !serverStateAvailable) return domConfirmed;
+      const disabled = socketState.autoLootDisabledItemIds;
+      return disabled instanceof Set && expected.every(({ itemId, desired }) =>
+        itemId === null || disabled.has(itemId) === !desired
+      );
+    }, serverStateAvailable ? 3000 : 1000, 50);
     if (!confirmed) {
       const current = new Map(availableLootControls().map((control) => [lootControlIdentity(control), control]));
-      const failed = expected.filter(({ identity, desired }) => current.get(identity)?.checked !== desired).map(({ name }) => name);
+      const disabled = socketState.autoLootDisabledItemIds;
+      const failed = expected.filter(({ identity, itemId, desired }) =>
+        current.get(identity)?.checked !== desired
+        || (serverStateAvailable && itemId !== null && (!(disabled instanceof Set) || disabled.has(itemId) !== !desired))
+      ).map(({ name }) => name);
       return { ok: false, error: `O Huntera não confirmou o auto-loot de: ${failed.join(", ")}`, configured: controls.length, changed, failed };
     }
     return { ok: true, configured: controls.length, changed };
@@ -2026,5 +2116,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, configureAccountLoot, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, configureAccountLoot, selectAmmo, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();

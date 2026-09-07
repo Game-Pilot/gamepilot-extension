@@ -14,8 +14,12 @@ let stateIntervalId = null;
 let lastOperationError = null;
 let lastReturnAt = 0;
 let lastTrainingAttemptAt = 0;
+let arrowSwitchBusy = false;
+let arrowSwitchTimer = null;
+let lastArrowSwitchAttemptAt = 0;
 const RETURN_COOLDOWN_MS = 30000; // min gap between auto-return attempts
 const TRAINING_RETRY_MS = 30000;
+const ARROW_SWITCH_RETRY_MS = 1000;
 const RECOVERY_CONFIRM_MS = 5000;
 let recoveryNoticeSent = false;
 let characterSelectionSince = 0;
@@ -345,6 +349,56 @@ function thresholdReached(gameState) {
   return Date.now() - lastReturnAt >= RETURN_COOLDOWN_MS;
 }
 
+function arrowSwitchSettings(config = {}) {
+  const source = config.arrowSwitching && typeof config.arrowSwitching === "object"
+    ? config.arrowSwitching
+    : config.settings?.arrowSwitching;
+  if (!source || source.enabled !== true) return null;
+  const singleTargetArrowId = Number(source.singleTargetArrowId);
+  const multiTargetArrowId = Number(source.multiTargetArrowId);
+  if (!Number.isInteger(singleTargetArrowId) || singleTargetArrowId <= 0 || !Number.isInteger(multiTargetArrowId) || multiTargetArrowId <= 0) return null;
+  return {
+    enabled: true,
+    singleTargetArrowId,
+    multiTargetArrowId,
+    multiTargetMinCreatures: Math.max(1, Math.min(20, Number(source.multiTargetMinCreatures) || 2))
+  };
+}
+
+async function runArrowSwitchCycle(gameState) {
+  const settings = arrowSwitchSettings(automationConfig);
+  const creatureCount = Number(gameState?.creaturesOnScreen?.count);
+  if (!automationEnabled || !settings || arrowSwitchBusy || commandBusy || automationBusy || !gameState?.inHunt) return;
+  if (gameState?.socket?.fresh !== true || gameState?.ammunition?.kind !== "arrow" || !Number.isFinite(creatureCount)) return;
+  const desiredItemId = creatureCount >= settings.multiTargetMinCreatures ? settings.multiTargetArrowId : settings.singleTargetArrowId;
+  if (Number(gameState?.ammunition?.arrow) === desiredItemId || Date.now() - lastArrowSwitchAttemptAt < ARROW_SWITCH_RETRY_MS) return;
+  arrowSwitchBusy = true;
+  lastArrowSwitchAttemptAt = Date.now();
+  const adapter = globalThis.GamePilotAdapters?.huntera;
+  try {
+    const switched = await adapter?.selectAmmo?.(desiredItemId, "arrow");
+    if (!switched?.ok) throw new Error(switched?.error || "Não foi possível trocar a flecha");
+    await sendEvent({
+      type: "ammo.switched",
+      message: `Flecha ajustada para ${creatureCount} criatura(s) na tela`,
+      details: { creatureCount, itemId: desiredItemId, threshold: settings.multiTargetMinCreatures }
+    });
+  } catch (error) {
+    await sendEvent({ type: "ammo.switch-failed", message: error.message, details: { creatureCount, itemId: desiredItemId } });
+  } finally {
+    arrowSwitchBusy = false;
+  }
+}
+
+function scheduleArrowSwitchCycle() {
+  if (arrowSwitchTimer !== null) clearTimeout(arrowSwitchTimer);
+  arrowSwitchTimer = setTimeout(() => {
+    arrowSwitchTimer = null;
+    const gameState = globalThis.GamePilotAdapters?.huntera?.readState?.();
+    void runArrowSwitchCycle(gameState);
+  }, 180);
+}
+
 async function runAutomationCycle(gameState) {
   if (!automationEnabled || automationBusy || commandBusy || !gameState?.inHunt || !thresholdReached(gameState)) return;
   automationBusy = true;
@@ -477,6 +531,7 @@ function sendState() {
     void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
   }
   void runAutoTrainingCycle(gameState);
+  void runArrowSwitchCycle(gameState);
   void runAutomationCycle(gameState);
   const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, operation: operationReport(gameState), lastError: lastOperationError } };
   // Busy tabs still ask for stop/return interrupts; the worker requests only
@@ -528,6 +583,7 @@ window.addEventListener("pagehide", () => {
 window.addEventListener("message", (event) => {
   if (event.source !== window || event.data?.source !== "gamepilot-huntera-socket") return;
   if (event.data.kind !== "message" && event.data.kind !== "connection") return;
+  if (event.data.kind === "message" && ["creature-appear", "creature-disappear", "creature-resync", "ammo-selection"].includes(event.data.message?.type)) scheduleArrowSwitchCycle();
   if (Date.now() - lastStatePostAt >= 2500) sendState();
 });
 

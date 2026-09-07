@@ -9,11 +9,14 @@
 
   const MESSAGE_TYPES = Object.freeze({
     2: "action-bar-update",
+    3: "ammo-selection",
     9: "bestiary-progress",
     7: "auto-loot-update",
     8: "battle-settings-update",
     11: "capacity-overflow",
     14: "coins",
+    15: "creature-appear",
+    18: "creature-disappear",
     26: "cyclopedia-catalog",
     29: "depot-update",
     30: "experience-gain",
@@ -51,6 +54,8 @@
     155: "creature-resync"
   });
 
+  const COMMAND_TYPES = Object.freeze({ "select-ammo": 77 });
+
   const activeSockets = new Set();
   const latest = {
     connected: false,
@@ -58,7 +63,10 @@
     openedAt: null,
     lastMessageAt: null,
     lastMessageType: null,
-    messages: {}
+    messages: {},
+    creatures: new Map(),
+    creaturesReceived: false,
+    playerId: null
   };
 
   function now() {
@@ -137,6 +145,22 @@
     }
   }
 
+  function encodeFrame(code, payload) {
+    const body = new TextEncoder().encode(JSON.stringify([code, payload]));
+    const nonceBytes = new Uint32Array(1);
+    crypto.getRandomValues(nonceBytes);
+    const nonce = nonceBytes[0] >>> 0;
+    const frame = new Uint8Array(5 + body.length);
+    frame[0] = nonce & 255;
+    frame[1] = (nonce >>> 8) & 255;
+    frame[2] = (nonce >>> 16) & 255;
+    frame[3] = (nonce >>> 24) & 255;
+    frame[4] = 0;
+    frame.set(body, 5);
+    xorBytes(frame.subarray(4), nonce);
+    return frame;
+  }
+
   function snapshot() {
     return {
       connected: latest.connected,
@@ -144,7 +168,10 @@
       openedAt: latest.openedAt,
       lastMessageAt: latest.lastMessageAt,
       lastMessageType: latest.lastMessageType,
-      messages: { ...latest.messages }
+      messages: { ...latest.messages },
+      creatures: [...latest.creatures.values()],
+      creaturesReceived: latest.creaturesReceived,
+      playerId: latest.playerId
     };
   }
 
@@ -164,6 +191,20 @@
           latestMonsterKey: updatedKeys[updatedKeys.length - 1] || previous.latestMonsterKey || null
         }
       };
+    }
+    if (entry.type === "welcome") latest.playerId = entry.payload?.playerId ?? latest.playerId;
+    else if (entry.type === "creature-appear" && entry.payload?.creature?.id != null) {
+      latest.creatures.set(entry.payload.creature.id, entry.payload.creature);
+      latest.creaturesReceived = true;
+    } else if (entry.type === "creature-disappear" && entry.payload?.id != null) {
+      latest.creatures.delete(entry.payload.id);
+      latest.creaturesReceived = true;
+    } else if (entry.type === "creature-resync" && Array.isArray(entry.payload?.creatures)) {
+      latest.creatures = new Map(entry.payload.creatures.map((creature) => [creature.id, creature]));
+      latest.creaturesReceived = true;
+    } else if (entry.type === "instance-enter" || entry.type === "player-died") {
+      latest.creatures.clear();
+      latest.creaturesReceived = false;
     }
     latest.lastMessageAt = receivedAt;
     latest.lastMessageType = entry.type;
@@ -201,6 +242,9 @@
       activeSockets.add(socket);
       latest.connected = true;
       latest.openedAt = now();
+      latest.creatures.clear();
+      latest.creaturesReceived = false;
+      latest.playerId = null;
       post("connection", { status: "open", socketUrl: String(url), at: latest.openedAt });
     });
     socket.addEventListener("message", (event) => void handleData(event.data));
@@ -215,6 +259,24 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.data?.source !== REQUEST_SOURCE) return;
     if (event.data.type === "socket-snapshot-request") post("snapshot", { snapshot: snapshot() });
+    if (event.data.type === "socket-command") {
+      const requestId = String(event.data.requestId || "");
+      const command = String(event.data.command || "");
+      const itemId = Number(event.data.payload?.itemId);
+      const socket = [...activeSockets].find((candidate) => candidate.readyState === WebSocket.OPEN);
+      if (command !== "select-ammo" || !Number.isInteger(itemId) || itemId <= 0) {
+        post("command-result", { requestId, ok: false, error: "Comando de munição inválido" });
+      } else if (!socket) {
+        post("command-result", { requestId, ok: false, error: "Socket do Huntera desconectado" });
+      } else {
+        try {
+          socket.send(encodeFrame(COMMAND_TYPES[command], { itemId }));
+          post("command-result", { requestId, ok: true });
+        } catch {
+          post("command-result", { requestId, ok: false, error: "Não foi possível enviar a troca de munição" });
+        }
+      }
+    }
   });
 
   try {
