@@ -90,3 +90,19 @@ test("keeps an authoritative creature roster in socket snapshots", async () => {
   assert.equal(snapshot.creaturesReceived, true);
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot.creatures)), [{ id: 1, kind: "player" }, { id: 2, kind: "monster", name: "Dragon" }]);
 });
+
+test('serializes asynchronous decode and discards data from replaced connections', async () => {
+  const h=bridge(), s=new h.window.WebSocket('wss://huntera.com.br/game-socket'); s.emit('open');
+  let release;
+  class SlowBlob extends Blob { async arrayBuffer(){await new Promise(r=>{release=r});return super.arrayBuffer();} }
+  const first=s.emit('message',{data:new SlowBlob([frame(24,{spellId:'first'})])});
+  await Promise.resolve();
+  const second=s.emit('message',{data:frame(20,{value:42}).buffer});
+  release(); await Promise.all([first,second]);
+  const events=h.posts.filter(p=>p.kind==='message').map(p=>p.message);
+  assert.deepEqual(events.map(e=>e.code),[24,20]);
+  assert.deepEqual(events.map(e=>e.sequence),[1,2]);
+  const pending=s.emit('message',{data:new SlowBlob([frame(24,{spellId:'old'})])});
+  await Promise.resolve(); s.emit('close'); release(); await pending;
+  assert.equal(h.posts.filter(p=>p.kind==='message').length,2);
+});

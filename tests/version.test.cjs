@@ -11,6 +11,7 @@ function versionApi(latest = "0.8.4", installed = "0.8.3") {
     console,
     fetch: async () => ({ ok: true, json: async () => ({ version: latest }) }),
     chrome: {
+      sidePanel: { setPanelBehavior: async () => {} },
       runtime: {
         getManifest: () => ({ version: installed }),
         onMessage: { addListener() {} }

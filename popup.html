@@ -6,7 +6,20 @@
     <title>GamePilot</title>
     <style>
       :root { color-scheme: dark; font-family: system-ui, -apple-system, sans-serif; }
-      body { width: 300px; margin: 0; padding: 16px; background: #121824; color: #f5f7fb; }
+      * { box-sizing: border-box; }
+      body { width: 100%; min-width: 0; margin: 0; padding: 16px; background: #121824; color: #f5f7fb; }
+      .stack > *, #analyzer-metrics > * { min-width: 0; }
+      table { table-layout: fixed; }
+      #hunt-analyzer { padding: 12px; border: 1px solid #2d3b52; border-radius: 10px; background: #0f1723; }
+      h2 { margin: 0 0 8px; font-size: 14px; }
+      #analyzer-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+      #analyzer-metrics div { font-size: 11px; color: #8491a8; }
+      #analyzer-metrics strong { display: block; color: #f5f7fb; font-size: 13px; }
+      details { margin-top: 10px; font-size: 12px; }
+      summary { cursor: pointer; color: #cbd5e1; }
+      table { width: 100%; font-size: 11px; border-collapse: collapse; margin-top: 6px; }
+      td, th { padding: 4px; text-align: right; }
+      td:first-child, th:first-child { text-align: left; overflow-wrap: anywhere; }
       .heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
       h1 { margin: 0 0 4px; font-size: 17px; }
       #environment { padding: 4px 7px; border: 1px solid #475569; border-radius: 999px; color: #cbd5e1; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
@@ -36,12 +49,47 @@
       .detail { display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: baseline; font-size: 11px; }
       .detail span { color: #8491a8; }
       .detail strong { overflow: hidden; color: #e5e7eb; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      [hidden] { display: none !important; }
+      #hunt-analyzer { padding: 16px; border-radius: 16px; background: linear-gradient(145deg, #172438, #101925 45%); }
+      .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+      .section-title h2 { margin: 0; color: #b8c6d9; font-size: 12px; font-weight: 600; }
+      .tag { font-size: 9px; padding: 4px 7px; border-radius: 6px; background: #38bdf81a; color: #7dd3fc; }
+      #observed-character { margin: 14px 0 4px; font-size: 23px; letter-spacing: -.6px; overflow-wrap: anywhere; }
+      #observed-status { font-size: 11px; margin-bottom: 16px; color: #a6b8cc; }
+      .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+      .metric-card { padding: 12px; background: #1b2b4080; border: 1px solid #34465e60; border-radius: 10px; min-width: 0; }
+      .metric-label { display: block; font-size: 10px; color: #a6b8cc; margin-bottom: 6px; }
+      .metric-value { display: block; font-size: clamp(16px, 5vw, 24px); letter-spacing: -.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+      .metric-card.accent .metric-value { color: #7dd3fc; }
+      .compact .metric-card { padding: 9px; background: #152234; }
+      .compact .metric-value { font-size: 17px; }
+      #hunt-analyzer details { border-top: 1px solid #2d3b52; padding-top: 14px; margin-top: 16px; }
+      #hunt-analyzer summary { font-size: 12px; font-weight: 650; }
+      .note { font-size: 10px; line-height: 1.6; color: #92a3b8; margin-top: 10px; }
+      .usage-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #2d3b5250; font-size: 12px; }
+      .usage-row span { overflow-wrap: anywhere; min-width: 0; }
+      .usage-row strong { color: #d9e9ff; padding: 3px 8px; background: #263750; border-radius: 6px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+      @media (max-width: 300px) { body { padding: 10px; } #hunt-analyzer { padding: 12px; } }
     </style>
   </head>
   <body>
     <div class="heading"><h1>GamePilot</h1><span id="environment">Verificando…</span></div>
-    <p>Vincule esta instalação à sua conta para separar cada navegador e aba.</p>
+    <p>Acompanhe a caçada da aba ativa do Huntera.</p>
+
     <div class="stack">
+      <section id="hunt-analyzer">
+        <div class="section-title"><h2>Sua caçada</h2><span class="tag">Medição própria</span></div>
+        <h3 id="observed-character">Aguardando personagem</h3>
+        <p id="observed-status" role="status">Buscando dados da aba atual…</p>
+        <div id="observed-content" hidden>
+          <div id="observed-metrics" class="metric-grid"></div>
+          <details open><summary>Combate</summary><div id="observed-combat" class="metric-grid compact"></div><p class="note">DPS considera todo o período capturado. O dano por magia ainda não tem atribuição confirmada.</p></details>
+          <details><summary>Recuperação e defesas</summary><div id="observed-recovery" class="metric-grid compact"></div><p class="note">Roubo de vida/mana está incluído na recuperação. — significa campo ainda não observado.</p></details>
+          <details open><summary>Magias utilizadas</summary><div id="observed-spells"></div><p class="note">Número de usos, incluindo magias de suporte.</p></details>
+          <details open><summary>Itens utilizados</summary><div id="observed-items"></div><p class="note">Usos observados, sem custos. A contagem ainda não cobre flechas.</p></details>
+          <details><summary>Sobre a medição</summary><p class="note">Dados dos eventos do jogo desde o início da captura. Abates pelo bestiário são parciais. Reconexão ou nova sessão reinicia os contadores. Loot, saldo e XP bruto ainda não são medidos.</p></details>
+        </div>
+      </section>
       <div id="status">Verificando vínculo…</div>
       <div id="version-card">
         <div><span>Versão instalada</span><br><strong id="installed-version">—</strong></div>

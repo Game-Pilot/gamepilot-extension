@@ -87,3 +87,77 @@ $("#pair-form").addEventListener("submit", async (event) => {
 
 $("#refresh-status").addEventListener("click", () => refreshStatus().catch((error) => setResult(error.message, true)));
 refreshStatus().catch((error) => setResult(error.message, true));
+
+const analyzerNumber = value => typeof value === "number" && Number.isFinite(value)
+  ? value.toLocaleString("pt-BR", { maximumFractionDigits: 0 }) : "—";
+function analyzerDuration(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "—";
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+    .map(value => String(value).padStart(2, "0")).join(":");
+}
+function metricCards(selector, entries) {
+  $(selector).replaceChildren(...entries.map(([label, value, accent]) => {
+    const card = document.createElement("div"); card.className = `metric-card${accent ? " accent" : ""}`;
+    const title = document.createElement("span"); title.className = "metric-label"; title.textContent = label;
+    const number = document.createElement("strong"); number.className = "metric-value"; number.textContent = value;
+    card.append(title, number); return card;
+  }));
+}
+function usageRows(selector, counts, names = {}) {
+  const entries = Object.entries(counts || {}).sort((a, b) => b[1] - a[1]);
+  const root = $(selector); root.replaceChildren();
+  if (!entries.length) { const empty = document.createElement("p"); empty.className = "note"; empty.textContent = "Nenhum uso registrado neste período."; root.append(empty); return; }
+  for (const [id, count] of entries) {
+    const row = document.createElement("div"); row.className = "usage-row";
+    const label = document.createElement("span"); label.textContent = Object.hasOwn(names, id) ? names[id] : id.replace(/-/g, " ");
+    const value = document.createElement("strong"); value.textContent = analyzerNumber(count);
+    row.append(label, value); root.append(row);
+  }
+}
+function renderAnalyzer(response) {
+  const o = response?.observedAnalyzer;
+  const available = response?.ok && Boolean(o?.startedAt);
+  $("#observed-content").hidden = !available;
+  $("#observed-character").textContent = response?.character || "Sua próxima caçada";
+  if (!available) {
+    $("#observed-status").textContent = response?.error || "Aguardando eventos da caçada para iniciar a medição.";
+    return;
+  }
+  const age = Date.now() - Date.parse(o.observedAt);
+  const status = !response.connected ? "Desconectado · últimos dados" : age > 15000 ? "Sem eventos recentes" : "Captura ativa";
+  $("#observed-status").textContent = `${status} · desde ${new Date(o.startedAt).toLocaleTimeString("pt-BR")}`;
+  const n = analyzerNumber;
+  metricCards("#observed-metrics", [["Tempo capturado", analyzerDuration(o.durationMs)], ["Abates · parcial", n(o.kills)], ["Experiência", n(o.xpGained), true], ["XP por hora", n(o.xpPerHour), true]]);
+  const dps = typeof o.damagePerSecond === "number" && Number.isFinite(o.damagePerSecond) ? o.damagePerSecond.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : "—";
+  metricCards("#observed-combat", [["Dano causado", n(o.damageDealt), true], ["Dano por segundo", dps, true], ["Dano recebido", n(o.damageReceived)], ["Acertos causados", n(o.outgoingHits)], ["Dano sem atribuição", n(o.unattributedDamage)]]);
+  metricCards("#observed-recovery", [["Vida recuperada", n(o.healthRestored)], ["Mana recuperada", n(o.manaRestored)], ["Roubo de vida", n(o.leechFieldObserved ? o.lifeLeech : null)], ["Roubo de mana", n(o.leechFieldObserved ? o.manaLeech : null)], ["Críticos causados", n(o.criticalFieldObserved ? o.outgoingCriticals : null)], ["Críticos recebidos", n(o.criticalFieldObserved ? o.incomingCriticals : null)], ["Seus ataques bloqueados", n(o.blockFieldObserved ? o.outgoingBlocks : null)], ["Ataques recebidos bloqueados", n(o.blockFieldObserved ? o.incomingBlocks : null)]]);
+  usageRows("#observed-spells", o.spellCasts, {haste: "Haste", "divine-missile": "Divine Missile", "strong-ethereal-spear": "Strong Ethereal Spear"});
+  usageRows("#observed-items", Object.fromEntries(Object.entries(o.itemUses || {}).map(([id, count]) => [`Item #${id}`, count])), {"Item #236": "Strong Health Potion", "Item #237": "Strong Mana Potion"});
+}
+
+let analyzerRequest = 0;
+const panelWindow = chrome.windows.getCurrent();
+async function refreshAnalyzer() {
+  const request = ++analyzerRequest;
+  try {
+    const { id: windowId } = await panelWindow;
+    const [tab] = await chrome.tabs.query({ active: true, windowId });
+    if (request !== analyzerRequest) return;
+    if (!tab?.id || !tab.url?.startsWith("https://huntera.com.br/")) {
+      renderAnalyzer({ error: "Selecione uma aba do Huntera nesta janela para ver a caçada." }); return;
+    }
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "hunt-analyzer-state" });
+    if (request !== analyzerRequest) return;
+    renderAnalyzer(response);
+  } catch {
+    if (request !== analyzerRequest) return;
+    renderAnalyzer({ error: "A aba ainda não responde. Após atualizar a extensão, recarregue o jogo para carregar a nova versão." });
+  }
+}
+chrome.tabs.onActivated.addListener(() => {
+  renderAnalyzer({ error: "Buscando dados da aba atual…" });
+  refreshAnalyzer();
+});
+refreshAnalyzer();
+setInterval(refreshAnalyzer, 2000);

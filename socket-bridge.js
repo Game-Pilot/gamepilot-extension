@@ -175,9 +175,9 @@
     };
   }
 
-  function record(message) {
-    const receivedAt = now();
-    let entry = { ...message, receivedAt };
+  let sequence = 0;
+  function record(message, receivedAt = now()) {
+    let entry = { ...message, receivedAt, sequence: ++sequence };
     if (entry.type === "bestiary-progress") {
       const previous = latest.messages[entry.type]?.payload || {};
       const updatedKeys = Object.keys(entry.payload?.kills || {});
@@ -212,14 +212,15 @@
     post("message", { message: entry });
   }
 
-  async function handleData(data) {
+  async function handleData(data, receivedAt, isCurrent = () => true) {
     try {
       let bytes;
       if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
       else if (ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
       else if (data instanceof Blob) bytes = new Uint8Array(await data.arrayBuffer());
       else return;
-      for (const message of await decodeFrame(bytes)) record(message);
+      const messages = await decodeFrame(bytes);
+      if (isCurrent()) for (const message of messages) record(message, receivedAt);
     } catch {
       // Observation must never interfere with the game connection.
     }
@@ -238,16 +239,25 @@
     if (!isHunteraSocket(url) || socket.__gamepilotObserved) return;
     socket.__gamepilotObserved = true;
     latest.socketUrl = String(url);
+    let queue = Promise.resolve();
+    let epoch;
     socket.addEventListener("open", () => {
       activeSockets.add(socket);
       latest.connected = true;
       latest.openedAt = now();
+      epoch = latest.openedAt;
+      latest.messages = {};
+      sequence = 0;
       latest.creatures.clear();
       latest.creaturesReceived = false;
       latest.playerId = null;
       post("connection", { status: "open", socketUrl: String(url), at: latest.openedAt });
     });
-    socket.addEventListener("message", (event) => void handleData(event.data));
+    socket.addEventListener("message", (event) => {
+      const receivedAt = now();
+      queue = queue.then(() => handleData(event.data, receivedAt, () => latest.openedAt === epoch && activeSockets.has(socket)));
+      return queue;
+    });
     socket.addEventListener("error", () => post("connection", { status: "error", socketUrl: String(url), at: now() }));
     socket.addEventListener("close", () => {
       activeSockets.delete(socket);

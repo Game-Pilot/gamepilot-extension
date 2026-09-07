@@ -3,7 +3,9 @@
   "name": "GamePilot Local Agent",
   "version": "0.8.7",
   "description": "Agente local do MVP GamePilot para operar e monitorar uma aba do Huntera.",
-  "permissions": ["storage"],
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "sidePanel"],
+  "side_panel": { "default_path": "popup.html" },
   "incognito": "split",
   "host_permissions": [
     "https://huntera.com.br/*",
@@ -25,12 +27,11 @@
     },
     {
       "matches": ["https://huntera.com.br/*"],
-      "js": ["adapters/huntera.js", "content.js"],
+      "js": ["observed-analyzer.js", "adapters/huntera.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_title": "GamePilot Local Agent",
-    "default_popup": "popup.html"
+    "default_title": "Abrir painel lateral do GamePilot"
   }
 }

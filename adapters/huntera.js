@@ -1,4 +1,5 @@
 (function registerHunteraAdapter() {
+  const observedAnalyzer = globalThis.GamePilotObservedAnalyzer?.create();
   function visible(element) {
     if (!element || element.hidden) return false;
     const style = window.getComputedStyle(element); const box = element.getBoundingClientRect();
@@ -65,6 +66,13 @@
     playerStats: null,
     inventory: null,
     analyzer: null,
+    analyzerFrames: {},
+    combatFrames: {},
+    combatEvents: [],
+    combatEventsDropped: 0,
+    combatEventsEvictedThrough: 0,
+    messageShapes: {},
+    observationOpenedAt: null,
     coins: null,
     huntPending: null,
     huntLeavePending: null,
@@ -131,12 +139,85 @@
     socketState.inventory = inventory;
   }
 
-  function applySocketMessage(message) {
+  // Fields observed in protocol shapes. Wire names deliberately remain neutral
+  // until their gameplay semantics have been verified. Never retain free text.
+  function recordCombatEvent(message) {
+    const fields = { 19: ["id", "healthPercent"], 20: ["attackerId", "targetId", "value", "effect", "critical", "blockType"],
+      23: ["id", "vital", "value", "leech"], 24: ["id", "kind", "spellId", "itemId"],
+      30: ["playerId", "value"], 73: [], 77: ["health", "maxHealth", "mana", "maxMana", "healthRegen", "manaRegen", "cooldowns", "statuses"],
+      78: ["targetId"], 84: ["kind", "attackerId", "targetId", "durationMs"] }[message.code];
+    if (!fields || !Number.isInteger(message.sequence) || message.sequence <= socketState.combatEventsEvictedThrough) return;
+    const events = socketState.combatEvents;
+    if (events.some(e => e.sequence === message.sequence)) return;
+    const payload = Object.fromEntries(fields.filter(k => k in (message.payload || {})).map(k => [k, message.payload[k]]));
+    const serialized = JSON.stringify(payload);
+    const event = { sequence: message.sequence, code: message.code, receivedAt: message.receivedAt,
+      payload: serialized.length <= 4096 ? JSON.parse(serialized) : null,
+      omitted: serialized.length <= 4096 ? null : "payload-limit" };
+    events.push(event);
+    events.sort((a, b) => a.sequence - b.sequence);
+    while (events.length > 300 || JSON.stringify(events).length > 65536) {
+      socketState.combatEventsEvictedThrough = events.shift().sequence; socketState.combatEventsDropped++;
+    }
+  }
+
+  function applySocketMessage(message, replay = false) {
     if (!message?.type) return;
     socketState.lastMessageAt = message.receivedAt || new Date().toISOString();
     socketState.lastMessageType = message.type;
     socketState.messages[message.type] = message.payload || {};
     const payload = message.payload || {};
+    // Diagnose protocol changes without copying arbitrary message values (chat,
+    // account data, etc.). Combat context uses an explicit allowlist below.
+    const observationCurrent = !socketState.observationOpenedAt || Date.parse(socketState.lastMessageAt) >= Date.parse(socketState.observationOpenedAt);
+    if (observationCurrent) observedAnalyzer?.accept(message, socketState.playerId, replay,
+      socketState.playerStats?.staminaDraining === true || socketState.phase === "hunting" || socketState.phase === "returning");
+    if (observationCurrent) recordCombatEvent(message);
+    if (observationCurrent) socketState.messageShapes[message.type] = {
+      code: message.code ?? null,
+      receivedAt: socketState.lastMessageAt,
+      keys: Object.keys(payload).slice(0, 60)
+    };
+    if (observationCurrent && ["hunt-analyzer-session", "hunt-analyzer-update"].includes(message.type)) {
+      let raw = null;
+      let omitted = null;
+      try {
+        const serialized = JSON.stringify(payload);
+        if (serialized.length <= 32768) raw = JSON.parse(serialized);
+        else omitted = "payload-exceeds-32768-characters";
+      } catch { omitted = "payload-not-serializable"; }
+      socketState.analyzerFrames[message.type] = {
+        code: message.code ?? null, receivedAt: socketState.lastMessageAt,
+        payload: raw, omitted
+      };
+    }
+    const combatFields = {
+      "player-stats": ["level", "vocation", "health", "maxHealth", "mana", "maxMana", "skills", "skillBonuses", "magicLevel", "magicLevelBonus", "combat", "cooldowns", "statuses", "staminaMs"],
+      "action-bar-update": ["slots", "managed", "blocked"],
+      "battle-settings-update": ["settings"],
+      "hunt-pending": ["hunt"],
+      "ammo-selection": ["arrow", "bolt"],
+      "player-inventory": ["equipment"],
+      "inventory-delta": ["changes"],
+      "instance-enter": ["instanceId", "scenarioId"],
+      "player-died": []
+    }[message.type];
+    if (observationCurrent && combatFields) {
+      const selected = Object.fromEntries(combatFields.filter(key => key in payload).map(key => [key, payload[key]]));
+      // Do not retain backpack contents in equipment deltas.
+      if (message.type === "inventory-delta") selected.changes = (Array.isArray(payload.changes) ? payload.changes : []).filter(change => change.slot);
+      const serialized = JSON.stringify(selected);
+      socketState.combatFrames[message.type] = {
+        code: message.code ?? null, receivedAt: socketState.lastMessageAt,
+        payload: serialized.length <= 32768 ? JSON.parse(serialized) : null,
+        omitted: serialized.length <= 32768 ? null : "payload-exceeds-32768-characters"
+      };
+      if (message.type === "inventory-delta" && socketState.combatFrames["player-inventory"]?.payload?.equipment) {
+        const baseline = socketState.combatFrames["player-inventory"];
+        for (const change of selected.changes) baseline.payload.equipment[change.slot] = change.item || null;
+        baseline.receivedAt = socketState.lastMessageAt;
+      }
+    }
     switch (message.type) {
       case "player-stats":
         socketState.playerStats = payload;
@@ -146,10 +227,14 @@
       case "player-inventory": socketState.inventory = copyInventory(payload); break;
       case "inventory-delta": applyInventoryDelta(payload); break;
       case "hunt-analyzer-update":
+        if (!observationCurrent) break;
         socketState.analyzer = payload;
         if (Number(socketState.playerStats?.huntSessionRemainingMs) > 0 && socketState.phase !== "returning") socketState.phase = "hunting";
         break;
-      case "hunt-analyzer-session": socketState.analyzer = { ...(socketState.analyzer || {}), ...payload }; break;
+      case "hunt-analyzer-session":
+        if (!observationCurrent) break;
+        socketState.analyzer = { ...(payload.startedAt === socketState.analyzer?.startedAt ? socketState.analyzer : {}), ...payload };
+        break;
       case "coins": socketState.coins = firstNumber(payload.balance); break;
       case "hunt-pending": socketState.huntPending = payload; socketState.phase = "starting"; break;
       case "hunt-leave-pending": socketState.huntLeavePending = payload; socketState.phase = payload.remainingMs === null ? "idle" : "returning"; break;
@@ -249,7 +334,18 @@
     if (!snapshot || typeof snapshot !== "object") return;
     socketState.connected = Boolean(snapshot.connected);
     socketState.socketUrl = snapshot.socketUrl || socketState.socketUrl;
-    for (const message of Object.values(snapshot.messages || {}).sort((left, right) => Date.parse(left?.receivedAt || "") - Date.parse(right?.receivedAt || ""))) applySocketMessage(message);
+    if (snapshot.openedAt && snapshot.openedAt !== socketState.observationOpenedAt) {
+      socketState.observationOpenedAt = snapshot.openedAt;
+      observedAnalyzer?.reset();
+      socketState.analyzer = null;
+      socketState.analyzerFrames = {};
+      socketState.combatFrames = {};
+      socketState.combatEvents = [];
+      socketState.combatEventsDropped = 0;
+      socketState.combatEventsEvictedThrough = 0;
+      socketState.messageShapes = {};
+    }
+    for (const message of Object.values(snapshot.messages || {}).sort((left, right) => (left.sequence || 0) - (right.sequence || 0))) applySocketMessage(message, true);
     if (snapshot.creaturesReceived === true && Array.isArray(snapshot.creatures)) {
       socketState.creatures = new Map(snapshot.creatures.map((creature) => [creature.id, creature]));
       socketState.creaturesReceived = true;
@@ -304,13 +400,25 @@
     const analyzer = socketState.analyzer;
     if (!analyzer) return {};
     const experience = firstNumber(analyzer.experience, analyzer.xpGained, analyzer.experienceGained);
-    const lootValue = firstNumber(analyzer.lootValue, analyzer.loot, analyzer.goldEarned);
+    const lootValue = firstNumber(analyzer.lootValue, Array.isArray(analyzer.loot) ? null : analyzer.loot, analyzer.goldEarned);
     const waste = firstNumber(analyzer.waste, analyzer.goldSpent);
     const kills = firstNumber(analyzer.kills, analyzer.monsters, analyzer.monstersKilled, analyzer.creaturesKilled);
-    const startedAt = timestampMs(analyzer.startedAt);
-    const durationMs = firstNumber(analyzer.durationMs) || (startedAt ? Math.max(0, Date.now() - startedAt) : null);
+    const startedAt = analyzer.startedAt == null ? null : timestampMs(analyzer.startedAt);
+    const durationMs = firstNumber(analyzer.durationMs) ?? (startedAt ? Math.max(0, Date.now() - startedAt) : null);
     const multiplier = durationMs > 0 ? 3600000 / durationMs : null;
+    const rawExperience = firstNumber(analyzer.rawExperience);
+    const perHour = value => multiplier === null || value === null ? null : Math.round(value * multiplier);
     return {
+      source: "websocket",
+      startedAt,
+      durationMs,
+      rawXpGained: rawExperience,
+      rawXpPerHour: perHour(rawExperience),
+      balance: lootValue === null || waste === null ? null : lootValue - waste,
+      spentPerHour: perHour(waste),
+      loot: Array.isArray(analyzer.loot) ? JSON.parse(JSON.stringify(analyzer.loot)) : null,
+      supplies: Array.isArray(analyzer.supplies) ? JSON.parse(JSON.stringify(analyzer.supplies)) : null,
+      damageInput: Array.isArray(analyzer.damageInput) ? JSON.parse(JSON.stringify(analyzer.damageInput)) : null,
       ...(kills === null ? {} : { kills }),
       ...(experience === null ? {} : { xpGained: experience }),
       ...(lootValue === null ? {} : { goldEarned: lootValue }),
@@ -318,6 +426,24 @@
       ...(multiplier === null || experience === null ? {} : { xpPerHour: Math.round(experience * multiplier) }),
       ...(multiplier === null || lootValue === null ? {} : { goldPerHour: Math.round(lootValue * multiplier) }),
       ...(multiplier === null || lootValue === null || waste === null ? {} : { balancePerHour: Math.round((lootValue - waste) * multiplier) })
+    };
+  }
+
+  function socketAnalyzerObservation() {
+    const frames = JSON.parse(JSON.stringify(socketState.analyzerFrames));
+    const received = Object.values(frames).map(frame => Date.parse(frame.receivedAt)).filter(Number.isFinite);
+    const lastFrameAt = received.length ? Math.max(...received) : null;
+    return {
+      source: "websocket", schemaVersion: 1,
+      openedAt: socketState.observationOpenedAt,
+      connected: socketState.connected,
+      // A fresh unrelated socket message must not make old analyzer data fresh.
+      analyzerAgeMs: lastFrameAt === null ? null : Math.max(0, Date.now() - lastFrameAt),
+      playerId: socketState.playerId,
+      frames,
+      combatFrames: JSON.parse(JSON.stringify(socketState.combatFrames)),
+      combatTimeline: { schemaVersion: 1, clock: "client-receive", dropped: socketState.combatEventsDropped, events: JSON.parse(JSON.stringify(socketState.combatEvents)) },
+      messageShapes: JSON.parse(JSON.stringify(socketState.messageShapes))
     };
   }
 
@@ -367,6 +493,15 @@
     else if (event.data.kind === "connection") {
       socketState.connected = event.data.status === "open";
       if (socketState.connected) {
+        socketState.observationOpenedAt = event.data.at || new Date().toISOString();
+        observedAnalyzer?.reset();
+        socketState.analyzer = null;
+        socketState.analyzerFrames = {};
+        socketState.combatFrames = {};
+        socketState.combatEvents = [];
+        socketState.combatEventsDropped = 0;
+        socketState.combatEventsEvictedThrough = 0;
+        socketState.messageShapes = {};
         socketState.socketUrl = event.data.socketUrl || socketState.socketUrl;
         socketState.bestiary = null;
         socketState.bestiaryKills = {};
@@ -444,7 +579,8 @@
       staminaMs: firstNumber(socketStats?.staminaMs), staminaDraining: socketStats?.staminaDraining ?? null,
       huntSessionRemainingMs: firstNumber(socketStats?.huntSessionRemainingMs),
       gold: socketGold ?? number(firstVisible("#header-gold")?.textContent), coins: socketCoins ?? analyzerNumber(coinsElement?.textContent),
-      backpack, metrics: { ...readLootMetrics(), ...socketMetricsValue },
+      backpack, metrics: socketMetricsValue.source ? socketMetricsValue : readLootMetrics(),
+      observedAnalyzer: observedAnalyzer?.read() || null,
       bestiaryLive: socketFresh() ? socketState.bestiary : null,
       creaturesOnScreen: socketCreaturesOnScreen(),
       ammunition: {
@@ -457,6 +593,7 @@
       party,
       target: { name: firstVisible(".target-name, .hud-target-name")?.textContent?.trim() || null, strategy: party.targetStrategy, label: party.targetLabel },
       socket: {
+        analyzerObservation: socketAnalyzerObservation(),
         connected: socketState.connected,
         fresh: socketFresh(),
         url: socketState.socketUrl,

@@ -599,3 +599,14 @@ restoreAutomationState();
 showBanner("extensão carregada");
 sendState();
 if (runtimeMessagingAvailable) stateIntervalId = setInterval(sendState, 3000);
+
+// Read-only popup access, independent of API pairing and heartbeat timing.
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message.type !== "hunt-analyzer-state") return;
+  try {
+    const state = globalThis.GamePilotAdapters?.huntera?.readState?.();
+    respond({ ok: true, character: state?.character?.name, metrics: state?.metrics,
+      observedAnalyzer: state?.observedAnalyzer,
+      connected: state?.socket?.connected, ageMs: state?.socket?.analyzerObservation?.analyzerAgeMs });
+  } catch (error) { respond({ ok: false, error: error.message }); }
+});

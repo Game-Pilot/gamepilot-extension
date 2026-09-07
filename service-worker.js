@@ -5,6 +5,8 @@ const WEB = API.includes("127.0.0.1") || API.includes("localhost")
   ? "http://127.0.0.1:3000"
   : "https://gamepilot-web.iancosta.dev";
 const DEVICE_TOKEN_KEY = "gamepilot.deviceToken";
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error("Não foi possível configurar o painel lateral", error));
 const INSTALLATION_ID_KEY = "gamepilot.installationId";
 
 function environmentView() {
