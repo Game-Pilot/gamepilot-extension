@@ -837,6 +837,7 @@
       return progress ? {
         name,
         monsterKey,
+        outfitId: firstNumber(monster?.outfitId),
         currentKills: progress.currentKills,
         targetKills: progress.targetKills,
         completed: progress.completed,
@@ -901,6 +902,29 @@
     return 0;
   }
 
+  function bestiaryThumbnail(card) {
+    if (!card?.querySelectorAll) return null;
+    const canvases = [...card.querySelectorAll("canvas")]
+      .filter((canvas) => Number(canvas?.width) >= 24 && Number(canvas?.height) >= 24)
+      .sort((left, right) => (Number(right.width) * Number(right.height)) - (Number(left.width) * Number(left.height)));
+    for (const canvas of canvases) {
+      try {
+        const dataUrl = canvas.toDataURL?.("image/png");
+        // A 64 px Huntera portrait is normally only a few KB. Keep a generous
+        // ceiling so a malformed or full-window canvas never bloats sync calls.
+        if (typeof dataUrl === "string" && /^data:image\/png;base64,/i.test(dataUrl) && dataUrl.length <= 120000) return dataUrl;
+      } catch {
+        // A tainted/unready canvas should not block the Bestiary sync.
+      }
+    }
+    return null;
+  }
+
+  function bestiaryCatalogMonster(name) {
+    const normalized = normalizeItemName(name);
+    return (socketState.bestiaryCatalog || []).find((monster) => normalizeItemName(monster?.name) === normalized) || null;
+  }
+
   function bestiaryEntryButtons() {
     // Preferred: the Cyclopedia card layout. Newer Huntera versions retain the
     // numeric stage progress even for completed entries, so parse it before
@@ -910,6 +934,11 @@
       return cards.map((button) => {
         const name = button.querySelector(".cyc-entry-name")?.textContent?.replace(/\s+/g, " ").trim() || "";
         if (!name) return null;
+        const catalogMonster = bestiaryCatalogMonster(name);
+        const visual = {
+          outfitId: firstNumber(catalogMonster?.outfitId),
+          thumbnailDataUrl: bestiaryThumbnail(button)
+        };
         const countEl = button.querySelector(".cyc-entry-count");
         const countText = countEl?.textContent?.replace(/\s+/g, " ").trim() || "";
         const match = countText.match(/([\d.,]+)\s*\/\s*([\d.,]+)/);
@@ -917,12 +946,12 @@
         const completedPhases = bestiaryCompletedPhases(button);
         if (match) {
           const progress = normalizeBestiaryStage(match[1], match[2], done, completedPhases);
-          return progress ? { button, name, ...progress } : null;
+          return progress ? { button, name, ...visual, ...progress } : null;
         }
         if (done) {
           const phases = Math.max(1, completedPhases);
           const progress = normalizeBestiaryStage(2500, 2500, true, phases - 1);
-          return progress ? { button, name, ...progress } : null;
+          return progress ? { button, name, ...visual, ...progress } : null;
         }
         return null;
       }).filter(Boolean);

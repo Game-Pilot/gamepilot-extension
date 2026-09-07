@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, applySocketMessage, socketCreaturesOnScreen,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -172,7 +172,7 @@ test("builds a complete mixed-goal snapshot from wire-26 and accumulated wire-9 
   const api = adapter();
   api.configureFixture({ bestiarySocket: {
     catalog: [
-      { id: "amazon", name: "Amazon", killsRequired: 2500 },
+      { id: "amazon", name: "Amazon", killsRequired: 2500, outfitId: 137 },
       { id: "rat", name: "Rat", killsRequired: 2500 },
       { id: "spider", name: "Spider", killsRequired: 2500 }
     ],
@@ -181,11 +181,20 @@ test("builds a complete mixed-goal snapshot from wire-26 and accumulated wire-9 
   } });
   const snapshot = JSON.parse(JSON.stringify(api.socketBestiarySnapshot()));
   assert.equal(snapshot.length, 3);
+  assert.equal(snapshot[0].outfitId, 137);
   assert.deepEqual(snapshot.map(({ name, currentKills, targetKills, absoluteKills, phase, baselineComplete }) => ({ name, currentKills, targetKills, absoluteKills, phase, baselineComplete })), [
     { name: "Amazon", currentKills: 1168, targetKills: 2500, absoluteKills: 1168, phase: 1, baselineComplete: false },
     { name: "Rat", currentKills: 269, targetKills: 5000, absoluteKills: 2769, phase: 2, baselineComplete: true },
     { name: "Spider", currentKills: 713, targetKills: 5000, absoluteKills: 3213, phase: 2, baselineComplete: true }
   ]);
+});
+
+test("captures the Huntera monster canvas without allowing oversized images", () => {
+  const api = adapter();
+  const portrait = { width: 64, height: 64, toDataURL: () => "data:image/png;base64,c21hbGw=" };
+  const oversized = { width: 1920, height: 1080, toDataURL: () => `data:image/png;base64,${"a".repeat(120001)}` };
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: () => [portrait] }), "data:image/png;base64,c21hbGw=");
+  assert.equal(api.bestiaryThumbnail({ querySelectorAll: () => [oversized] }), null);
 });
 
 test("does not use a partial wire-9 payload as a complete sync", () => {
