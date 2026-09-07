@@ -431,6 +431,21 @@
     return { percent: Math.round(percent * 10) / 10, currentOz: Math.round((current / 100) * 100) / 100, maxOz: Math.round((capacity / 100) * 100) / 100, source: "socket" };
   }
 
+  function imbuementSnapshot() {
+    const inventory = socketState.inventory;
+    if (!inventory) return null;
+    const materials = new Map();
+    for (const item of [...(inventory.slots || []), ...(inventory.satchel || [])].filter(Boolean)) {
+      const itemId = item.itemId ?? item.item_id ?? item.id ?? item.typeId ?? item.type_id;
+      if (!socketState.imbuementMaterialIds?.has(String(itemId))) continue;
+      const count = Math.max(1, Number(item.count ?? item.quantity ?? item.amount ?? 1) || 1);
+      const previous = materials.get(String(itemId));
+      materials.set(String(itemId), { itemId, name: item.name || item.itemName || item.item_name || `Item #${itemId}`, count: (previous?.count || 0) + count });
+    }
+    const equipment = JSON.parse(JSON.stringify(inventory.equipment || {}));
+    return { equipment, equipmentRevision: JSON.stringify(equipment), materials: [...materials.values()], observedAt: socketState.lastMessageAt };
+  }
+
   function socketMetrics() {
     const analyzer = socketState.analyzer;
     if (!analyzer) return {};
@@ -625,6 +640,7 @@
         arrow: firstNumber(socketState.ammoSelection?.arrow),
         bolt: firstNumber(socketState.ammoSelection?.bolt)
       },
+      imbuement: imbuementSnapshot(),
       training: socketTraining(),
       party,
       combatBarJournal: readCombatBarJournal(),
@@ -2528,6 +2544,51 @@
     return { ok: true, partial: failed.length > 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, ignored, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { warning: `${failed.length} item(ns) não puderam ser destinados e foram preservados` } : {}) };
   }
 
+  async function applyImbuementPlan(payload = {}) {
+    const plan = payload.plan || {};
+    const applications = Array.isArray(plan.applications) ? plan.applications : [];
+    const maxSpend = Number(plan.maxSpend);
+    if (!applications.length) return { ok: false, error: "O plano aprovado não contém imbuements" };
+    if (!Number.isFinite(maxSpend) || maxSpend < 0) return { ok: false, error: "O plano não contém um limite de gasto válido" };
+    const current = imbuementSnapshot();
+    if (!current || current.equipmentRevision !== plan.equipmentRevision) return { ok: false, error: "O set equipado mudou desde a revisão. Revise novamente antes de aplicar." };
+
+    const nav = firstVisible(".hud-imbuements, #nav-imbuements, [data-nav='imbuements'], [data-window='imbuements']")
+      || [...document.querySelectorAll("button")].find((button) => visible(button) && /imbuement|imbuir/i.test(button.textContent || button.getAttribute("aria-label") || ""));
+    nav?.click();
+    const root = await waitFor(".imbuement-window, [data-window='imbuement'], .imbuements-window", 4000, true);
+    if (!root) return { ok: false, error: "A tela de imbuements não abriu no Huntera" };
+    let spent = 0;
+    const applied = [];
+    for (const application of applications) {
+      const item = [...root.querySelectorAll("[data-item-id], .imbuement-item, .equipment-slot")].find((entry) => String(entry.dataset.itemId || "") === String(application.itemId || "") || normalizeItemName(entry.textContent).includes(normalizeItemName(application.itemName)));
+      if (!item) return { ok: false, error: `${application.itemName}: item equipado não encontrado na tela de imbuements`, applied, spent };
+      item.click();
+      await waitUntil(() => item.classList.contains("selected") || item.getAttribute("aria-selected") === "true" || visible(root.querySelector(".imbuement-options, [data-section='imbuements']")), 2000);
+      const option = [...root.querySelectorAll("[data-imbuement-key], .imbuement-option, .imbuement-entry, button")].find((entry) => entry.dataset.imbuementKey === application.imbuementKey || normalizeItemName(entry.textContent).includes(normalizeItemName(application.imbuementName)));
+      if (!option || option.disabled) return { ok: false, error: `${application.imbuementName}: opção indisponível para ${application.itemName}`, applied, spent };
+      option.click();
+      const apply = buttonMatching(root, /aplicar|imbuir|apply|imbue/i, ["[data-action='apply-imbuement']", ".imbuement-apply"]);
+      if (!apply) return { ok: false, error: `${application.imbuementName}: botão de aplicação não encontrado`, applied, spent };
+      apply.click();
+      const confirmation = await waitFor(".imbuement-confirm, .trade-dialog, [role='dialog']", 2500, true);
+      if (!confirmation) return { ok: false, error: `${application.imbuementName}: o Huntera não apresentou a confirmação`, applied, spent };
+      const displayedCost = Number(confirmation.dataset.cost ?? String(confirmation.textContent || "").match(/([\d.]+)\s*(?:gp|gold)/i)?.[1]?.replace(/\./g, "") ?? 0);
+      if (!Number.isFinite(displayedCost) || spent + displayedCost > maxSpend) {
+        buttonMatching(confirmation, /cancelar|voltar|cancel|back/i, ["[data-action='cancel']"])?.click();
+        return { ok: false, error: `O custo atual ultrapassa o limite aprovado de ${maxSpend.toLocaleString("pt-BR")} gp`, applied, spent };
+      }
+      const confirm = buttonMatching(confirmation, /confirmar|aplicar|comprar.*aplicar|confirm|apply/i, ["button[type='submit']", "[data-action='confirm']"]);
+      if (!confirm || confirm.disabled) return { ok: false, error: `${application.imbuementName}: confirmação indisponível`, applied, spent };
+      confirm.click();
+      const completed = await waitUntil(() => !visible(confirmation), 5000, 100);
+      if (!completed) return { ok: false, error: `${application.imbuementName}: o Huntera não confirmou a aplicação`, applied, spent };
+      spent += displayedCost;
+      applied.push(application);
+    }
+    return { ok: true, applied, spent, maxSpend };
+  }
+
   async function closeStore() {
     const close = document.querySelector("#trade-close") || document.querySelector(".trade-window #trade-close");
     if (!visible(document.querySelector(".trade-window"))) return { ok: true, alreadyClosed: true };
@@ -2537,5 +2598,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, combatBarExperiment, readCombatBarJournal, configureAccountLoot, selectAmmo, leaveHunt, openStore, sellItems, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, combatBarExperiment, readCombatBarJournal, configureAccountLoot, selectAmmo, leaveHunt, openStore, sellItems, applyImbuementPlan, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();

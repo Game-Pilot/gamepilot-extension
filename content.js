@@ -181,7 +181,7 @@ async function handleCommand(command, commandId, payload = {}) {
   try {
     const pendingBar = adapter?.readCombatBarJournal?.();
     if (pendingBar && pendingBar.status !== "restored" && ["start", "start-hunt", "configure-actions", "bestiary-next", "prepare-group"].includes(command)) throw new Error("Restaure o teste de barra pendente antes de iniciar outra operação");
-    if (["start", "start-hunt", "configure-actions", "bestiary-next", "combat-bar-test", "combat-bar-restore"].includes(command)) {
+    if (["start", "start-hunt", "configure-actions", "bestiary-next", "combat-bar-test", "combat-bar-restore", "imbue-set"].includes(command)) {
       const state = adapter?.readState?.();
       const expected = String(payload.characterName || payload.character_name || payload.character?.name || "").trim();
       const actual = String(state?.character?.name || "").trim();
@@ -273,6 +273,11 @@ async function handleCommand(command, commandId, payload = {}) {
       }
       automationEnabled = false; automationActions = []; automationPayload = {}; lastReturnAt = 0; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
+    } else if (command === "imbue-set") {
+      automationEnabled = false;
+      showBanner("revalidando set, materiais e limite de gasto");
+      result = await adapter?.applyImbuementPlan?.(payload) || result;
+      if (result.ok) await sendEvent({ type: "imbuements.applied", message: `${result.applied?.length || 0} imbuement(s) aplicado(s) ao set`, details: { ...result, commandId, command, status: "completed" } });
     } else if (command === "open-store") {
       mode = "selling"; showBanner("abrindo loja"); result = await adapter?.openStore?.({ ...payload, autoLeave: true }) || result;
       if (result.ok) await sendEvent({ type: "shop.opened", message: result.alreadyOpen ? "Loja já estava aberta" : "Loja aberta pela extensão", details: { payload } });
