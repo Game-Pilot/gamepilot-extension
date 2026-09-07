@@ -914,6 +914,9 @@
       .sort((left, right) => (Number(right.width) * Number(right.height)) - (Number(left.width) * Number(left.height)));
     for (const canvas of canvases) {
       try {
+        const context = canvas.getContext?.("2d", { willReadFrequently: true });
+        const pixels = context?.getImageData?.(0, 0, Number(canvas.width), Number(canvas.height))?.data;
+        if (pixels && !pixels.some((value, index) => index % 4 === 3 && value > 0)) continue;
         const dataUrl = validPng(canvas.toDataURL?.("image/png"));
         // A 64 px Huntera portrait is normally only a few KB. Keep a generous
         // ceiling so a malformed or full-window canvas never bloats sync calls.
@@ -958,6 +961,13 @@
       if (dataUrl) return dataUrl;
     }
     return null;
+  }
+
+  async function waitForBestiaryThumbnails() {
+    return waitUntil(() => {
+      const entries = bestiaryEntryButtons();
+      return entries.length > 0 && entries.every((entry) => Boolean(entry.thumbnailDataUrl));
+    }, 5000, 80);
   }
 
   function bestiaryCatalogMonster(name) {
@@ -1169,10 +1179,12 @@
       const firstPage = numberedPages[0];
       const firstMoved = await bestiaryGoToPage(firstPage, { allowUnchanged: true });
       if (!firstMoved) return { ok: false, error: "O Bestiary não voltou para a primeira página" };
+      await waitForBestiaryThumbnails();
       collectCurrentPage();
       for (const pageNumber of numberedPages.slice(1)) {
         const moved = await bestiaryGoToPage(pageNumber);
         if (!moved) return { ok: false, error: "O Bestiary não avançou para a página " + pageNumber };
+        await waitForBestiaryThumbnails();
         collectCurrentPage();
       }
       if (!entries.size) return { ok: false, error: "Nenhuma entrada do Bestiary foi encontrada" };
@@ -1207,6 +1219,7 @@
           || (nextSignature && nextSignature !== beforeSignature);
       }, 6000, 100);
       if (!changed) return { ok: false, error: `O Bestiary não avançou após a página ${pages + 1}` };
+      await waitForBestiaryThumbnails();
     }
     if (!entries.size) return { ok: false, error: "Nenhuma entrada do Bestiary foi encontrada" };
     return {
