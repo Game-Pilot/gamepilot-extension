@@ -2269,7 +2269,10 @@
   }
 
   function lootDisposition(item, quote = {}, policy = "default") {
-    if (policy === "ignore") return { destination: "ignore", reason: "política da conta: não coletar nem vender", sellPrice: null };
+    // "Ignore" is a collection policy. If an ignored item is already in the
+    // backpack (for example, from before the policy changed), clear that
+    // balance at the NPC instead of letting it accumulate forever.
+    if (policy === "ignore") return { destination: "npc", reason: "política da conta: não coletar; vender saldo existente no NPC", sellPrice: null };
     if (policy === "warehouse") return { destination: "warehouse", reason: "política da conta: sempre guardar", sellPrice: null };
     if (policy === "npc") return { destination: "npc", reason: "política da conta: sempre vender no NPC", sellPrice: null };
     if (!socketState.imbuementMaterialIds) return { destination: "pending", reason: "aguardando catálogo de materiais de imbuement", sellPrice: null };
@@ -2319,6 +2322,38 @@
 
   function inventoryItemAt(ref) {
     return socketState.inventory?.slots?.[ref.index];
+  }
+
+  function inventoryItemCount(item) {
+    return item ? Math.max(1, Number(item.count ?? item.quantity ?? item.amount ?? 1) || 1) : 0;
+  }
+
+  function slotIconFingerprint(slot) {
+    const canvas = slot?.querySelector?.("canvas.slot-icon, canvas");
+    if (!canvas || typeof canvas.getContext !== "function") return null;
+    try {
+      const width = Number(canvas.width);
+      const height = Number(canvas.height);
+      const pixels = canvas.getContext("2d", { willReadFrequently: true })?.getImageData(0, 0, width, height)?.data;
+      if (!pixels?.length) return null;
+      let hash = 2166136261;
+      let visiblePixels = 0;
+      for (let index = 0; index < pixels.length; index += 1) {
+        hash ^= pixels[index];
+        hash = Math.imul(hash, 16777619);
+        if (index % 4 === 3 && pixels[index] > 0) visiblePixels += 1;
+      }
+      return visiblePixels ? `${width}x${height}:${hash >>> 0}` : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function warehouseTargetForItem(warehouse, source, preferMatchingStack = false) {
+    const slots = [...warehouse.querySelectorAll(".depot-grid .slot")].filter(visible);
+    const fingerprint = preferMatchingStack ? slotIconFingerprint(source) : null;
+    const matchingStack = fingerprint && slots.find((slot) => slot.draggable && slotIconFingerprint(slot) === fingerprint);
+    return matchingStack || slots.find((slot) => !slot.draggable && slot.childElementCount === 0) || null;
   }
 
   function inventoryCountForItem(itemId) {
@@ -2419,23 +2454,35 @@
         let storedCount = 0;
         let itemError = null;
         for (const ref of refs) {
-          const grid = warehouse.querySelector(".depot-pack-grid");
-          const source = grid?.querySelectorAll(".slot")?.[ref.index];
-          const target = [...warehouse.querySelectorAll(".depot-grid .slot")].find((slot) => !slot.draggable && slot.childElementCount === 0 && visible(slot));
-          if (!source || !source.draggable) { itemError = "Slot do item não corresponde ao inventário recebido"; break; }
-          if (!target) { itemError = "Não há espaço livre no depósito"; break; }
-          const moved = dispatchSlotMove(source, target, ref);
-          if (!moved) { itemError = "O navegador não permitiu mover o item para o depósito"; break; }
-          const refCount = Math.max(1, Number(ref.item?.count ?? ref.item?.quantity ?? ref.item?.amount ?? 1) || 1);
-          const quantity = await confirmSlotMoveQuantity(refCount);
-          if (!quantity.ok) { itemError = quantity.error; break; }
-          const confirmed = await waitUntil(() => {
-            const current = inventoryItemAt(ref);
-            const currentId = current?.itemId ?? current?.item_id ?? current?.id ?? current?.typeId ?? current?.type_id;
-            return currentId == null || String(currentId) !== String(item.itemId);
-          }, 4000, 100);
-          if (!confirmed) { itemError = "O depósito não confirmou a transferência"; break; }
-          storedCount += refCount;
+          // Huntera can keep a grouped item in the same source slot with a
+          // smaller count after a move. Treat that decrease as confirmation and
+          // keep moving the remainder until the source slot is empty.
+          while (true) {
+            const before = inventoryItemAt(ref);
+            const beforeId = before?.itemId ?? before?.item_id ?? before?.id ?? before?.typeId ?? before?.type_id;
+            if (beforeId == null || String(beforeId) !== String(item.itemId)) break;
+            const beforeCount = inventoryItemCount(before);
+            const grid = warehouse.querySelector(".depot-pack-grid");
+            const source = grid?.querySelectorAll(".slot")?.[ref.index];
+            if (!source || !source.draggable) { itemError = "Slot do item não corresponde ao inventário recebido"; break; }
+            const target = warehouseTargetForItem(warehouse, source, beforeCount > 1);
+            if (!target) { itemError = "O depósito não expôs um slot de destino"; break; }
+            const moved = dispatchSlotMove(source, target, ref);
+            if (!moved) { itemError = "O navegador não permitiu mover o item para o depósito"; break; }
+            const quantity = await confirmSlotMoveQuantity(beforeCount);
+            if (!quantity.ok) { itemError = quantity.error; break; }
+            let afterCount = beforeCount;
+            const confirmed = await waitUntil(() => {
+              const current = inventoryItemAt(ref);
+              const currentId = current?.itemId ?? current?.item_id ?? current?.id ?? current?.typeId ?? current?.type_id;
+              afterCount = currentId == null || String(currentId) !== String(item.itemId) ? 0 : inventoryItemCount(current);
+              return afterCount < beforeCount;
+            }, 4000, 100);
+            if (!confirmed) { itemError = "O depósito não confirmou a transferência"; break; }
+            storedCount += beforeCount - afterCount;
+            if (afterCount === 0) break;
+          }
+          if (itemError) break;
         }
         if (storedCount > 0) storedItems.push({ itemId: item.itemId, name: item.name, count: storedCount });
         if (itemError) failedItems.push({ ...item, error: itemError });

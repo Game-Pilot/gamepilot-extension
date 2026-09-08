@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -328,6 +328,13 @@ test("ignore policy disables collection while other account policies enable it",
   assert.equal(kept.checked, true);
 });
 
+test("ignore policy disables future collection but sells inventory already in the backpack", () => {
+  const api = adapter();
+  const decision = api.lootDisposition({ itemId: "3583", name: "Dragon Ham", count: 24, npcValue: 10 }, {}, "ignore");
+  assert.equal(decision.destination, "npc");
+  assert.match(decision.reason, /não coletar; vender saldo existente/i);
+});
+
 test("accepts Huntera's optimistic auto-loot state without requiring a socket echo", async () => {
   const entry = { hidden: false, dataset: { itemId: "3583" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
   const ignored = { disabled: false, checked: true, dataset: { itemId: "3583" }, closest: () => entry,
@@ -385,7 +392,7 @@ test("default loot falls back to NPC without a quote and only stores items witho
   assert.equal(api.lootDisposition({ npcValue: null }, { found: true, sellPrices: [200] }, "default").destination, "warehouse");
   assert.equal(api.lootDisposition({ npcValue: 100 }, { found: true, sellPrices: [200] }, "warehouse").destination, "warehouse");
   assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "npc").destination, "npc");
-  assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "ignore").destination, "ignore");
+  assert.equal(api.lootDisposition({ npcValue: 100 }, {}, "ignore").destination, "npc");
 });
 
 test("default loot deposits official imbuement materials regardless of market or NPC value", () => {
@@ -395,7 +402,7 @@ test("default loot deposits official imbuement materials regardless of market or
   for (const quote of [{ found: true, sellPrices: [10000] }, { found: true, sellPrices: [1] }, {}]) {
     assert.equal(api.lootDisposition(item, quote).destination, "warehouse");
   }
-  assert.equal(api.lootDisposition(item, {}, "ignore").destination, "ignore");
+  assert.equal(api.lootDisposition(item, {}, "ignore").destination, "npc");
   assert.equal(api.lootDisposition(item, {}, "npc").destination, "npc");
   api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
   assert.equal(api.lootDisposition(item).destination, "npc");
@@ -476,6 +483,65 @@ test("confirms the full stack when moving a grouped item", async () => {
   assert.deepEqual({ ...result }, { ok: true, prompted: true, count: 12 });
   assert.equal(input.value, "12");
   assert.equal(clicks, 1);
+});
+
+test("prefers an identical depot stack when no empty slot is available", () => {
+  const api = adapter();
+  const canvas = (seed) => ({
+    width: 1, height: 1,
+    getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray([seed, 2, 3, 255]) }) })
+  });
+  const sourceCanvas = canvas(10);
+  const other = { draggable: true, childElementCount: 1, hidden: false, getBoundingClientRect: () => ({ width: 32, height: 32 }), querySelector: () => canvas(20) };
+  const matching = { draggable: true, childElementCount: 2, hidden: false, getBoundingClientRect: () => ({ width: 32, height: 32 }), querySelector: () => canvas(10) };
+  const warehouse = { querySelectorAll: () => [other, matching] };
+  const source = { querySelector: () => sourceCanvas };
+  assert.equal(api.warehouseTargetForItem(warehouse, source, true), matching);
+});
+
+test("uses Huntera's rolling empty depot slot for a non-grouped item", () => {
+  const api = adapter();
+  const matching = { draggable: true, childElementCount: 1, hidden: false, getBoundingClientRect: () => ({ width: 32, height: 32 }) };
+  const empty = { draggable: false, childElementCount: 0, hidden: false, getBoundingClientRect: () => ({ width: 32, height: 32 }) };
+  const warehouse = { querySelectorAll: () => [matching, empty] };
+  assert.equal(api.warehouseTargetForItem(warehouse, {}, false), empty);
+});
+
+test("keeps depositing a grouped item when Huntera moves its stack in parts", async () => {
+  const api = adapter();
+  api.configureFixture({ inventory: { slots: [{ itemId: 10, name: "Imbuement Material", count: 150 }] } });
+  let open = true;
+  let drops = 0;
+  const source = { draggable: true, dispatchEvent() {} };
+  const targets = [0, 1].map(() => ({
+    draggable: false, childElementCount: 0, hidden: false,
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 40, height: 40 }),
+    dispatchEvent(event) {
+      if (event.type !== "drop") return;
+      this.childElementCount = 1;
+      this.draggable = true;
+      drops += 1;
+      const remaining = drops === 1 ? { itemId: 10, name: "Imbuement Material", count: 50 } : null;
+      setTimeout(() => api.applySocketMessage({ type: "inventory-delta", payload: { changes: [{ container: "backpack", index: 0, item: remaining }] } }), 0);
+    }
+  }));
+  const grid = { querySelectorAll: () => [source] };
+  const close = { click() { open = false; } };
+  const warehouse = {
+    hidden: false,
+    getBoundingClientRect: () => ({ width: 400, height: 300 }),
+    querySelector: (selector) => selector === ".depot-pack-grid" ? grid : selector === "#depot-close" ? close : null,
+    querySelectorAll: (selector) => selector === ".depot-grid .slot" ? targets : []
+  };
+  api.configureDocument({
+    querySelector: (selector) => selector.includes(".depot-window") && open ? warehouse : null,
+    querySelectorAll: () => []
+  });
+  const result = await api.moveItemsToWarehouse([{ itemId: "10", name: "Imbuement Material", count: 150 }]);
+  assert.equal(result.stored, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.storedItems)), [{ itemId: "10", name: "Imbuement Material", count: 150 }]);
+  assert.equal(result.failedItems.length, 0);
+  assert.equal(drops, 2);
 });
 
 test("cancelling a pending invitation aborts the wait and allows the next operation", async () => {
