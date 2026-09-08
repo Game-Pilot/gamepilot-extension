@@ -544,6 +544,54 @@ test("keeps depositing a grouped item when Huntera moves its stack in parts", as
   assert.equal(drops, 2);
 });
 
+test("refreshes grouped item slot indexes after Huntera compacts the backpack", async () => {
+  const api = adapter();
+  let slots = [
+    { itemId: 10, name: "Crossbow", count: 1 },
+    { itemId: 20, name: "Other", count: 1 },
+    { itemId: 10, name: "Crossbow", count: 1 },
+    { itemId: 10, name: "Crossbow", count: 1 }
+  ];
+  api.configureFixture({ inventory: { slots } });
+  let open = true;
+  const movedIndexes = [];
+  const depotSlots = [];
+  const sources = Array.from({ length: 4 }, () => ({ draggable: true, dispatchEvent() {} }));
+  const addRollingEmptySlot = () => depotSlots.push({
+      draggable: false, childElementCount: 0, hidden: false,
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 40, height: 40 }),
+      dispatchEvent(event) {
+        if (event.type !== "drop") return;
+        const ref = JSON.parse(event.dataTransfer.getData("application/x-slot-ref"));
+        movedIndexes.push(ref.index);
+        slots.splice(ref.index, 1);
+        this.childElementCount = 1;
+        this.draggable = true;
+        setTimeout(() => api.applySocketMessage({ type: "player-inventory", payload: { slots } }), 0);
+        setTimeout(addRollingEmptySlot, 75);
+      }
+    });
+  addRollingEmptySlot();
+  const grid = { querySelectorAll: () => sources };
+  const close = { click() { open = false; } };
+  const warehouse = {
+    hidden: false,
+    getBoundingClientRect: () => ({ width: 400, height: 300 }),
+    querySelector: (selector) => selector === ".depot-pack-grid" ? grid : selector === "#depot-close" ? close : null,
+    querySelectorAll: (selector) => selector === ".depot-grid .slot" ? depotSlots : []
+  };
+  api.configureDocument({
+    querySelector: (selector) => selector.includes(".depot-window") && open ? warehouse : null,
+    querySelectorAll: () => []
+  });
+  const result = await api.moveItemsToWarehouse([{ itemId: "10", name: "Crossbow", count: 3 }]);
+  assert.equal(result.stored, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.storedItems)), [{ itemId: "10", name: "Crossbow", count: 3 }]);
+  assert.equal(result.failedItems.length, 0);
+  assert.deepEqual(movedIndexes, [0, 1, 1]);
+  assert.deepEqual(JSON.parse(JSON.stringify(slots)), [{ itemId: 20, name: "Other", count: 1 }]);
+});
+
 test("cancelling a pending invitation aborts the wait and allows the next operation", async () => {
   const api = adapter();
   let accepted = false;

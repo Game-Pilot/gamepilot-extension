@@ -2449,40 +2449,40 @@
     const failedItems = [];
     try {
       for (const item of items) {
-        const refs = inventoryRefsForItem(item.itemId);
-        if (!refs.length) { failedItems.push({ ...item, error: "Item não encontrado na mochila" }); continue; }
+        if (!inventoryRefsForItem(item.itemId).length) { failedItems.push({ ...item, error: "Item não encontrado na mochila" }); continue; }
         let storedCount = 0;
         let itemError = null;
-        for (const ref of refs) {
-          // Huntera can keep a grouped item in the same source slot with a
-          // smaller count after a move. Treat that decrease as confirmation and
-          // keep moving the remainder until the source slot is empty.
-          while (true) {
-            const before = inventoryItemAt(ref);
-            const beforeId = before?.itemId ?? before?.item_id ?? before?.id ?? before?.typeId ?? before?.type_id;
-            if (beforeId == null || String(beforeId) !== String(item.itemId)) break;
-            const beforeCount = inventoryItemCount(before);
+        // Huntera compacts the backpack after every move. Always resolve the
+        // next source from the latest inventory snapshot instead of keeping
+        // slot indexes captured before the first transfer.
+        while (true) {
+          const ref = inventoryRefsForItem(item.itemId)[0];
+          if (!ref) break;
+          const beforeTotal = inventoryCountForItem(item.itemId);
+          const beforeCount = inventoryItemCount(ref.item);
+          let source = null;
+          let target = null;
+          // The depot exposes a single rolling empty slot. After a drop it can
+          // briefly disappear while Huntera renders its replacement, so wait
+          // for the backpack and depot grids to settle before the next move.
+          const slotReady = await waitUntil(() => {
             const grid = warehouse.querySelector(".depot-pack-grid");
-            const source = grid?.querySelectorAll(".slot")?.[ref.index];
-            if (!source || !source.draggable) { itemError = "Slot do item não corresponde ao inventário recebido"; break; }
-            const target = warehouseTargetForItem(warehouse, source, beforeCount > 1);
-            if (!target) { itemError = "O depósito não expôs um slot de destino"; break; }
-            const moved = dispatchSlotMove(source, target, ref);
-            if (!moved) { itemError = "O navegador não permitiu mover o item para o depósito"; break; }
-            const quantity = await confirmSlotMoveQuantity(beforeCount);
-            if (!quantity.ok) { itemError = quantity.error; break; }
-            let afterCount = beforeCount;
-            const confirmed = await waitUntil(() => {
-              const current = inventoryItemAt(ref);
-              const currentId = current?.itemId ?? current?.item_id ?? current?.id ?? current?.typeId ?? current?.type_id;
-              afterCount = currentId == null || String(currentId) !== String(item.itemId) ? 0 : inventoryItemCount(current);
-              return afterCount < beforeCount;
-            }, 4000, 100);
-            if (!confirmed) { itemError = "O depósito não confirmou a transferência"; break; }
-            storedCount += beforeCount - afterCount;
-            if (afterCount === 0) break;
-          }
-          if (itemError) break;
+            source = grid?.querySelectorAll(".slot")?.[ref.index] || null;
+            target = source?.draggable ? warehouseTargetForItem(warehouse, source, beforeCount > 1) : null;
+            return Boolean(source?.draggable && target);
+          }, 2500, 50);
+          if (!slotReady) { itemError = "O depósito não expôs o próximo slot de destino"; break; }
+          const moved = dispatchSlotMove(source, target, ref);
+          if (!moved) { itemError = "O navegador não permitiu mover o item para o depósito"; break; }
+          const quantity = await confirmSlotMoveQuantity(beforeCount);
+          if (!quantity.ok) { itemError = quantity.error; break; }
+          let afterTotal = beforeTotal;
+          const confirmed = await waitUntil(() => {
+            afterTotal = inventoryCountForItem(item.itemId);
+            return afterTotal < beforeTotal;
+          }, 4000, 100);
+          if (!confirmed) { itemError = "O depósito não confirmou a transferência"; break; }
+          storedCount += beforeTotal - afterTotal;
         }
         if (storedCount > 0) storedItems.push({ itemId: item.itemId, name: item.name, count: storedCount });
         if (itemError) failedItems.push({ ...item, error: itemError });
