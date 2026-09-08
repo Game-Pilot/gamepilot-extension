@@ -55,7 +55,7 @@
     155: "creature-resync"
   });
 
-  const COMMAND_TYPES = Object.freeze({ "select-ammo": 77, "set-auto-loot": 79 });
+  const COMMAND_TYPES = Object.freeze({ "select-ammo": 77 });
 
   const activeSockets = new Set();
   const latest = {
@@ -274,15 +274,10 @@
       const requestId = String(event.data.requestId || "");
       const command = String(event.data.command || "");
       const itemId = Number(event.data.payload?.itemId);
-      const disabledItemIds = Array.isArray(event.data.payload?.disabledItemIds)
-        ? [...new Set(event.data.payload.disabledItemIds.map(Number).filter((value) => Number.isInteger(value) && value > 0))]
-        : null;
       const socket = [...activeSockets].find((candidate) => candidate.readyState === WebSocket.OPEN);
       const payload = command === "select-ammo" && Number.isInteger(itemId) && itemId > 0
         ? { itemId }
-        : command === "set-auto-loot" && disabledItemIds !== null
-          ? { disabledItemIds }
-          : null;
+        : null;
       if (!payload) {
         post("command-result", { requestId, ok: false, error: "Comando do Huntera inválido" });
       } else if (!socket) {

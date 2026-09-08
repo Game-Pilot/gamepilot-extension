@@ -70,14 +70,14 @@ test("sends Huntera select-ammo opcode 77 through the observed socket", () => {
   assert.equal(harness.posts.at(-1).ok, true);
 });
 
-test("sends the complete disabled auto-loot list with Huntera opcode 79", () => {
+test("does not bypass Huntera's own auto-loot state handler", () => {
   const harness = bridge();
   const socket = new harness.window.WebSocket("wss://huntera.com.br/game-socket");
   socket.emit("open");
   harness.windowListeners.get("message")({ source: harness.window, data: { source: "gamepilot-huntera-content", type: "socket-command", requestId: "loot", command: "set-auto-loot", payload: { disabledItemIds: [3583, "3349", 3583] } } });
-  assert.deepEqual(decode(socket.sent[0]), [79, { disabledItemIds: [3583, 3349] }]);
+  assert.equal(socket.sent.length, 0);
   assert.equal(harness.posts.at(-1).kind, "command-result");
-  assert.equal(harness.posts.at(-1).ok, true);
+  assert.equal(harness.posts.at(-1).ok, false);
 });
 
 test("keeps an authoritative creature roster in socket snapshots", async () => {

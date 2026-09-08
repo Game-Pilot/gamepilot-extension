@@ -1489,24 +1489,6 @@
     return control.checked === desired;
   }
 
-  function notifyLootControlChanged(control) {
-    if (typeof Event === "undefined") return false;
-    control.dispatchEvent?.(new Event("input", { bubbles: true }));
-    control.dispatchEvent?.(new Event("change", { bubbles: true }));
-    return true;
-  }
-
-  function sendAutoLootState(disabledItemIds) {
-    const requestId = globalThis.crypto?.randomUUID?.() || `loot-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    window.postMessage({
-      source: "gamepilot-huntera-content",
-      type: "socket-command",
-      requestId,
-      command: "set-auto-loot",
-      payload: { disabledItemIds: [...disabledItemIds] }
-    }, "*");
-  }
-
   async function revealLootControls() {
     if (availableLootControls().length) return true;
     const direct = document.querySelector("#nav-auto-loot, [data-page='auto-loot'], [data-tab='loot']");
@@ -1524,9 +1506,6 @@
     const keys = new Set((Array.isArray(hunt.lootItemKeys) ? hunt.lootItemKeys : []).map((key) => String(key)));
     const configured = hunt.lootConfigured === true || keys.size > 0;
     const accountConfigured = Number(accountLoot.version) >= 1 || Array.isArray(accountLoot.items);
-    const serverStateAvailable = socketState.autoLootDisabledItemIds instanceof Set;
-    const desiredDisabledItemIds = serverStateAvailable ? new Set(socketState.autoLootDisabledItemIds) : null;
-    let serverStateChanged = false;
     let changed = 0;
     const expected = [];
     for (const control of controls) {
@@ -1535,39 +1514,25 @@
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
       const policy = configuredLootPolicy(accountLoot, { itemId, name });
       const desired = accountConfigured ? policy !== "ignore" : configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
-      const numericItemId = firstNumber(itemId);
-      const serverMismatch = serverStateAvailable && numericItemId !== null
-        && socketState.autoLootDisabledItemIds.has(numericItemId) !== !desired;
-      if (desiredDisabledItemIds && numericItemId !== null) {
-        if (desired) desiredDisabledItemIds.delete(numericItemId);
-        else desiredDisabledItemIds.add(numericItemId);
-      }
-      if (serverMismatch) serverStateChanged = true;
-      expected.push({ identity: lootControlIdentity(control), itemId: numericItemId, desired, name: name || String(itemId) || "item desconhecido" });
+      expected.push({ identity: lootControlIdentity(control), desired, name: name || String(itemId) || "item desconhecido" });
       if (control.checked !== desired && setLootControlChecked(control, desired)) changed += 1;
-      else if (serverMismatch && notifyLootControlChanged(control)) changed += 1;
     }
-    if (serverStateChanged) sendAutoLootState(desiredDisabledItemIds);
-    // The checkbox changes synchronously, but Huntera persists auto-loot over
-    // the game socket. Starting before auto-loot-update arrives can use the
-    // previous server-side list even though the UI already looks correct.
-    await new Promise((resolve) => window.setTimeout(resolve, serverStateAvailable && changed ? 100 : 250));
+    // Huntera updates its local auto-loot state optimistically and sends the
+    // complete disabled-item list from its own checkbox handler. The server
+    // does not promise to echo an auto-loot-update after that command, so an
+    // older observed socket snapshot cannot be used as an acknowledgement.
+    // Re-read the rendered controls instead; they are driven by the same
+    // Huntera state that performs the persistence request.
+    await new Promise((resolve) => window.setTimeout(resolve, changed ? 100 : 0));
     const confirmed = await waitUntil(() => {
       const current = new Map(availableLootControls().map((control) => [lootControlIdentity(control), control]));
-      const domConfirmed = expected.every(({ identity, desired }) => current.get(identity)?.checked === desired);
-      if (!domConfirmed || !serverStateAvailable) return domConfirmed;
-      const disabled = socketState.autoLootDisabledItemIds;
-      return disabled instanceof Set && expected.every(({ itemId, desired }) =>
-        itemId === null || disabled.has(itemId) === !desired
-      );
-    }, serverStateAvailable ? 3000 : 1000, 50);
+      return expected.every(({ identity, desired }) => current.get(identity)?.checked === desired);
+    }, 1000, 50);
     if (!confirmed) {
       const current = new Map(availableLootControls().map((control) => [lootControlIdentity(control), control]));
-      const disabled = socketState.autoLootDisabledItemIds;
-      const failed = expected.filter(({ identity, itemId, desired }) =>
-        current.get(identity)?.checked !== desired
-        || (serverStateAvailable && itemId !== null && (!(disabled instanceof Set) || disabled.has(itemId) !== !desired))
-      ).map(({ name }) => name);
+      const failed = expected
+        .filter(({ identity, desired }) => current.get(identity)?.checked !== desired)
+        .map(({ name }) => name);
       return { ok: false, error: `O Huntera não confirmou o auto-loot de: ${failed.join(", ")}`, configured: controls.length, changed, failed };
     }
     return { ok: true, configured: controls.length, changed };

@@ -328,32 +328,11 @@ test("ignore policy disables collection while other account policies enable it",
   assert.equal(kept.checked, true);
 });
 
-test("waits for Huntera to persist ignored loot before confirming", async () => {
+test("accepts Huntera's optimistic auto-loot state without requiring a socket echo", async () => {
   const entry = { hidden: false, dataset: { itemId: "3583" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
   const ignored = { disabled: false, checked: true, dataset: { itemId: "3583" }, closest: () => entry,
     click() { this.checked = false; } };
   const api = adapter([], [ignored]);
-  api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [] } });
-  let settled = false;
-  const pending = api.configureLoot({}, { version: 1, items: [
-    { externalItemId: "3583", name: "Dragon Ham", policy: "ignore" }
-  ] }).then((result) => { settled = true; return result; });
-  await new Promise((resolve) => setTimeout(resolve, 180));
-  assert.equal(settled, false);
-  api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [3583] } });
-  const result = await pending;
-  assert.equal(result.ok, true);
-  assert.equal(ignored.checked, false);
-});
-
-test("resends ignored loot when the checkbox is correct but Huntera server state is stale", async () => {
-  const entry = { hidden: false, dataset: { itemId: "3583" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
-  let api;
-  const ignored = { disabled: false, checked: false, dataset: { itemId: "3583" }, closest: () => entry, click() {},
-    dispatchEvent(event) {
-      if (event.type === "change") setTimeout(() => api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [3583] } }), 0);
-    } };
-  api = adapter([], [ignored]);
   api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [] } });
   const result = await api.configureLoot({}, { version: 1, items: [
     { externalItemId: "3583", name: "Dragon Ham", policy: "ignore" }
@@ -363,17 +342,19 @@ test("resends ignored loot when the checkbox is correct but Huntera server state
   assert.equal(ignored.checked, false);
 });
 
-test("fails when Huntera does not persist an ignored item", async () => {
+test("does not resend auto-loot when Huntera's checkbox is already correct", async () => {
   const entry = { hidden: false, dataset: { itemId: "3583" }, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Dragon Ham" }) };
-  const ignored = { disabled: false, checked: true, dataset: { itemId: "3583" }, closest: () => entry,
-    click() { this.checked = false; } };
+  let dispatched = 0;
+  const ignored = { disabled: false, checked: false, dataset: { itemId: "3583" }, closest: () => entry, click() {}, dispatchEvent() { dispatched += 1; } };
   const api = adapter([], [ignored]);
   api.applySocketMessage({ type: "auto-loot-update", payload: { disabledItemIds: [] } });
   const result = await api.configureLoot({}, { version: 1, items: [
     { externalItemId: "3583", name: "Dragon Ham", policy: "ignore" }
   ] });
-  assert.equal(result.ok, false);
-  assert.deepEqual([...result.failed], ["Dragon Ham"]);
+  assert.equal(result.ok, true);
+  assert.equal(result.changed, 0);
+  assert.equal(dispatched, 0);
+  assert.equal(ignored.checked, false);
 });
 
 test("loot synchronization fails when Huntera reverts an ignored item's checkbox", async () => {
