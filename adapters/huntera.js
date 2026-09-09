@@ -1,14 +1,14 @@
 (function registerHunteraAdapter() {
   const observedAnalyzer = globalThis.GamePilotObservedAnalyzer?.create();
   const IMBUEMENT_MATERIALS = {
-    void: [{ name: "Rope Belt", marketName: "rope belt", quantity: 25 }, { name: "Silencer Claws", marketName: "silencer claws", quantity: 15 }, { name: "Grimeleech Wings", marketName: "grimeleech wings", quantity: 5 }],
+    void: [{ name: "Rope Belt", marketName: "rope belt", quantity: 25 }, { name: "Silencer Claws", marketName: "silencer claws", quantity: 25 }, { name: "Grimeleech Wings", marketName: "some grimeleech wings", quantity: 5 }],
     vampirism: [{ name: "Vampire Teeth", marketName: "vampire teeth", quantity: 25 }, { name: "Bloody Pincers", marketName: "bloody pincers", quantity: 15 }, { name: "Piece of Dead Brain", marketName: "piece of dead brain", quantity: 5 }],
     strike: [{ name: "Protective Charms", marketName: "protective charm", quantity: 20 }, { name: "Sabreteeth", marketName: "sabretooth", quantity: 25 }, { name: "Vexclaw Talons", marketName: "vexclaw talon", quantity: 5 }],
     precision: [{ name: "Elven Scouting Glass", marketName: "elven scouting glass", quantity: 25 }, { name: "Elven Hoof", marketName: "elven hoof", quantity: 20 }, { name: "Metal Spike", marketName: "metal spike", quantity: 10 }],
     swiftness: [{ name: "Damselfly Wings", marketName: "damselfly wing", quantity: 15 }, { name: "Compass", marketName: "compass", quantity: 25 }, { name: "Waspoid Wings", marketName: "waspoid wing", quantity: 20 }]
   };
   const IMBUEMENT_STAGE_COUNT = { basic: 1, intricate: 2, powerful: 3 };
-  const IMBUEMENT_SHRINE_FEES = { basic: 15000, intricate: 55000, powerful: 150000 };
+  const IMBUEMENT_SHRINE_FEES = { basic: 15000, intricate: 60000, powerful: 250000 };
   function visible(element) {
     if (!element || element.hidden) return false;
     const style = window.getComputedStyle(element); const box = element.getBoundingClientRect();
@@ -2381,6 +2381,10 @@
     return { ...material, owned: Number(owned || 0), missing: Math.max(0, Number(material.required || 0) - Number(owned || 0)), available: remaining === 0, unavailable: remaining, fills, cost: remaining === 0 ? cost : null };
   }
 
+  function retryableMarketActionError(message) {
+    return /not so fast|previous market action is still going through/i.test(String(message || ""));
+  }
+
   async function openImbuementMarket() {
     const opened = await openStore({ autoLeave: true });
     if (!opened.ok) return opened;
@@ -2591,10 +2595,14 @@
   function emptyImbuementSlot(item, socketIndex = null) {
     const slots = [...item.querySelectorAll(".imbue-slot, .imbuement-slot, button")];
     const candidates = Number.isInteger(socketIndex) && socketIndex >= 0 ? slots.slice(socketIndex, socketIndex + 1) : slots;
-    return candidates.find((slot) => {
+    const isEmpty = (slot) => {
       const text = normalizeItemName(slot.textContent || slot.getAttribute?.("aria-label"));
       return visible(slot) && !slot.disabled && (/\b(?:vazio|empty)\b/.test(text) || slot.classList?.contains("empty"));
-    });
+    };
+    // A resumed plan numbers only the remaining sockets. If an earlier socket
+    // was already imbued before an interruption, fall back to the next actual
+    // empty socket instead of trying to overwrite the occupied one.
+    return candidates.find(isEmpty) || slots.find(isEmpty);
   }
 
   function imbuementOption(root, application) {
@@ -2795,9 +2803,15 @@
     return { ok: true, partial: failed.length > 0, ...npcResult, auctionListed: auctionListed.length, auctionItems: auctionListed, stored: warehouseResult.stored, storedItems: warehouseResult.storedItems, ignored, failedItems: failed, decisions: decisions.map(({ element, ...item }) => item), message, ...(failed.length ? { warning: `${failed.length} item(ns) não puderam ser destinados e foram preservados` } : {}) };
   }
 
-  async function buyImbuementMaterials(payload = {}) {
+  async function reportImbuementProgress(onProgress, details) {
+    if (typeof onProgress !== "function") return;
+    try { await onProgress(details); } catch { /* Progress reporting must never interrupt the game operation. */ }
+  }
+
+  async function buyImbuementMaterials(payload = {}, onProgress = null) {
     const maxSpend = Number(payload.plan?.maxSpend);
     if (!Number.isFinite(maxSpend) || maxSpend < 0) return { ok: false, error: "O plano não contém um limite de gasto válido", spent: 0, purchased: [] };
+    await reportImbuementProgress(onProgress, { phase: "quoting", message: "Revalidando materiais, saldo e ofertas do Market" });
     const liveQuote = await quoteImbuementPlan(payload, true);
     if (!liveQuote.ok) return { ...liveQuote, spent: 0, purchased: [] };
     let spent = 0;
@@ -2810,12 +2824,17 @@
       if (liveQuote.totalCost > maxSpend) return { ok: false, error: `A cotação atual de ${liveQuote.totalCost.toLocaleString("pt-BR")} gp ultrapassa o limite aprovado de ${maxSpend.toLocaleString("pt-BR")} gp`, quote: liveQuote, spent, purchased };
       const gold = Number(readState()?.gold);
       if (Number.isFinite(gold) && gold < liveQuote.totalCost) return { ok: false, error: `Saldo insuficiente: são necessários ${liveQuote.totalCost.toLocaleString("pt-BR")} gp`, quote: liveQuote, spent, purchased };
+      const purchases = liveQuote.materials.flatMap((material) => material.fills.map((fill) => ({ material, fill })));
+      await reportImbuementProgress(onProgress, { phase: "buying", current: 0, total: purchases.length, spent, totalCost: liveQuote.totalCost, message: purchases.length ? `Cotação aprovada; iniciando ${purchases.length} compra(s) no Market` : "Materiais completos; nenhuma compra necessária" });
+      let purchaseIndex = 0;
       for (const material of liveQuote.materials) {
         for (const fill of material.fills) {
+          purchaseIndex += 1;
           const quantity = Number(fill.quantity);
           const transactionCost = Number(fill.cost);
           if (spent + transactionCost + liveQuote.shrineFee > maxSpend) return { ok: false, error: `O preço de ${material.name} subiu acima do limite aprovado`, quote: liveQuote, spent, purchased };
           if (!fill.offerId || !Number.isInteger(quantity) || quantity <= 0) return { ok: false, error: `${material.name}: a oferta não possui identificador válido`, quote: liveQuote, spent, purchased };
+          await reportImbuementProgress(onProgress, { phase: "buying", current: purchaseIndex, total: purchases.length, material: material.name, quantity, spent, message: `Comprando ${quantity}x ${material.name} (${purchaseIndex}/${purchases.length})` });
           let marketResult = null;
           for (let attempt = 0; attempt < 5; attempt += 1) {
             socketState.messages["market-result"] = null;
@@ -2823,12 +2842,14 @@
             if (!sent.ok) return { ok: false, error: `${material.name}: ${sent.error}`, quote: liveQuote, spent, purchased };
             const completed = await waitUntil(() => socketState.messages["market-result"]?.action === "accept", 3000, 25);
             marketResult = completed ? socketState.messages["market-result"] : null;
-            if (marketResult?.ok || !/not so fast/i.test(String(marketResult?.message || ""))) break;
-            await new Promise((resolve) => window.setTimeout(resolve, 900));
+            if (marketResult?.ok || !retryableMarketActionError(marketResult?.message)) break;
+            await reportImbuementProgress(onProgress, { phase: "waiting-market", current: purchaseIndex, total: purchases.length, material: material.name, quantity, attempt: attempt + 1, spent, message: `Market ainda processando; aguardando para repetir ${material.name}` });
+            await new Promise((resolve) => window.setTimeout(resolve, 900 * (attempt + 1)));
           }
           if (!marketResult?.ok) return { ok: false, error: `${material.name}: ${marketResult?.message || "o Market não confirmou a compra"}`, quote: liveQuote, spent, purchased };
           spent += transactionCost;
           purchased.push({ name: material.name, quantity, unitPrice: fill.unitPrice, cost: transactionCost });
+          await reportImbuementProgress(onProgress, { phase: "purchased", current: purchaseIndex, total: purchases.length, material: material.name, quantity, cost: transactionCost, spent, message: `${quantity}x ${material.name} comprado(s) por ${transactionCost.toLocaleString("pt-BR")} gp` });
           await new Promise((resolve) => window.setTimeout(resolve, 350));
         }
       }
@@ -2840,7 +2861,7 @@
     }
   }
 
-  async function applyImbuementPlan(payload = {}, initialSpent = 0, purchased = []) {
+  async function applyImbuementPlan(payload = {}, initialSpent = 0, purchased = [], onProgress = null) {
     const plan = payload.plan || {};
     const applications = Array.isArray(plan.applications) ? plan.applications : [];
     const maxSpend = Number(plan.maxSpend);
@@ -2858,7 +2879,10 @@
     if (!root) return { ok: false, error: "A tela de imbuements não abriu no Huntera" };
     let spent = Number(initialSpent) || 0;
     const applied = [];
-    for (const application of applications) {
+    await reportImbuementProgress(onProgress, { phase: "applying", current: 0, total: applications.length, spent, message: `Materiais prontos; iniciando ${applications.length} aplicação(ões) no santuário` });
+    for (let applicationIndex = 0; applicationIndex < applications.length; applicationIndex += 1) {
+      const application = applications[applicationIndex];
+      await reportImbuementProgress(onProgress, { phase: "applying", current: applicationIndex + 1, total: applications.length, application: application.imbuementName, item: application.itemName, spent, message: `Aplicando ${application.imbuementName} em ${application.itemName} (${applicationIndex + 1}/${applications.length})` });
       const item = imbuementItem(root, application);
       if (!item) return { ok: false, error: `${application.itemName}: item equipado não encontrado na tela de imbuements`, applied, spent };
       const slot = emptyImbuementSlot(item, Number.isInteger(application.socketIndex) ? application.socketIndex : null);
@@ -2921,16 +2945,19 @@
       if (!completed) return { ok: false, error: `${application.imbuementName}: o Huntera não confirmou a aplicação`, applied, spent };
       spent += displayedCost;
       applied.push(application);
+      await reportImbuementProgress(onProgress, { phase: "applied", current: applicationIndex + 1, total: applications.length, application: application.imbuementName, item: application.itemName, cost: displayedCost, spent, message: `${application.imbuementName} aplicado em ${application.itemName}` });
     }
     return { ok: true, applied, purchased, spent, maxSpend };
   }
 
-  async function executeImbuementPlan(payload = {}) {
+  async function executeImbuementPlan(payload = {}, onProgress = null) {
     const current = imbuementSnapshot();
     if (!current || current.equipmentRevision !== payload.plan?.equipmentRevision) return { ok: false, error: "O set equipado mudou desde a cotação. Faça uma nova cotação antes de aplicar." };
-    const purchase = await buyImbuementMaterials(payload);
+    const purchase = await buyImbuementMaterials(payload, onProgress);
     if (!purchase.ok) return purchase;
-    return applyImbuementPlan(payload, purchase.spent, purchase.purchased);
+    const applied = await applyImbuementPlan(payload, purchase.spent, purchase.purchased, onProgress);
+    if (applied.ok) await reportImbuementProgress(onProgress, { phase: "completed", current: applied.applied.length, total: applied.applied.length, spent: applied.spent, message: `${applied.applied.length} imbuement(s) concluído(s) com sucesso` });
+    return applied;
   }
 
   async function closeStore() {

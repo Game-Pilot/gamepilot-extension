@@ -308,7 +308,16 @@ async function handleCommand(command, commandId, payload = {}) {
     } else if (command === "imbue-set") {
       automationEnabled = false;
       showBanner("revalidando set, materiais e limite de gasto");
-      result = await adapter?.applyImbuementPlan?.(payload) || result;
+      const onProgress = async (progress = {}) => {
+        const message = progress.message || "Processando imbuements";
+        showBanner(message);
+        await sendEvent({
+          type: "imbuements.progress",
+          message,
+          details: { ...progress, operationCommandId: commandId, command, status: "progress" }
+        });
+      };
+      result = await adapter?.applyImbuementPlan?.(payload, onProgress) || result;
       if (result.ok) await sendEvent({ type: "imbuements.applied", message: `${result.applied?.length || 0} imbuement(s) aplicado(s) ao set`, details: { ...result, commandId, command, status: "completed" } });
     } else if (command === "open-store") {
       mode = "selling"; showBanner("abrindo loja"); result = await adapter?.openStore?.({ ...payload, autoLeave: true }) || result;

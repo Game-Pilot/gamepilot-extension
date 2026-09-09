@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, goldAmount,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -130,6 +130,7 @@ test("matches the current Huntera imbuement item, empty slot, family and tier", 
   const application = { itemId: 123, itemName: "Royal Helmet", imbuementKey: "powerful-void", imbuementName: "Powerful Void" };
   assert.equal(api.imbuementItem(root, application), helmet);
   assert.equal(api.emptyImbuementSlot(helmet), empty);
+  assert.equal(api.emptyImbuementSlot(helmet, 0), empty);
   assert.equal(api.imbuementOption(root, application), voidOption);
   assert.equal(api.imbuementTier(root, application), powerful);
   assert.deepEqual(JSON.parse(JSON.stringify(api.imbuementParts(application))), { tier: "powerful", family: "void" });
@@ -178,6 +179,19 @@ test("derives market materials and protected shrine fees from the approved imbue
   ]);
 });
 
+test("uses the Huntera catalog name for grimeleech wings", () => {
+  const api = adapter();
+  const demand = api.imbuementMaterials([
+    { imbuementKey: "powerful-void", imbuementName: "Powerful Void" }
+  ]);
+  assert.equal(demand.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(demand.materials)), [
+    { name: "Rope Belt", marketName: "rope belt", required: 25 },
+    { name: "Silencer Claws", marketName: "silencer claws", required: 25 },
+    { name: "Grimeleech Wings", marketName: "some grimeleech wings", required: 5 }
+  ]);
+});
+
 test("prices the missing material across the cheapest market sell offers", () => {
   const api = adapter();
   const quote = api.quoteMarketMaterial({ name: "Rope Belt", marketName: "rope belt", required: 25 }, 5, [
@@ -193,12 +207,28 @@ test("prices the missing material across the cheapest market sell offers", () =>
   ]);
 });
 
+test("quotes the live Huntera protected fees for the remaining weapon imbuements", () => {
+  const api = adapter();
+  const demand = api.imbuementMaterials([
+    { imbuementKey: "powerful-void" },
+    { imbuementKey: "intricate-vampirism" }
+  ]);
+  assert.equal(demand.shrineFee, 310000);
+});
+
 test("does not authorize a market quote when sell offers cannot fill the demand", () => {
   const api = adapter();
   const quote = api.quoteMarketMaterial({ name: "Protective Charms", required: 20 }, 2, [{ quantity: 10, unitPrice: 500 }]);
   assert.equal(quote.available, false);
   assert.equal(quote.unavailable, 8);
   assert.equal(quote.cost, null);
+});
+
+test("retries both Huntera messages that mean the previous market action is pending", () => {
+  const api = adapter();
+  assert.equal(api.retryableMarketActionError("Not so fast."), true);
+  assert.equal(api.retryableMarketActionError("Your previous market action is still going through."), true);
+  assert.equal(api.retryableMarketActionError("Offer no longer exists."), false);
 });
 
 test("tracks only visible monsters from Huntera creature socket events", () => {
