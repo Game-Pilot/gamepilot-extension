@@ -2463,13 +2463,38 @@
     return item ? Math.max(1, Number(item.count ?? item.quantity ?? item.amount ?? 1) || 1) : 0;
   }
 
+  let slotReadbackCanvas = null;
+  let slotReadbackContext = null;
+  function slotIconPixels(canvas, width, height) {
+    // Huntera owns the visible canvas and normally creates its 2D context
+    // without the readback hint. Asking for the same context with new options
+    // cannot change it, so repeated getImageData calls trigger a Chrome warning.
+    // Copy into our own CPU-backed canvas whose context is created correctly.
+    if (typeof document.createElement === "function") {
+      if (!slotReadbackCanvas) {
+        slotReadbackCanvas = document.createElement("canvas");
+        slotReadbackContext = slotReadbackCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      if (slotReadbackContext) {
+        if (slotReadbackCanvas.width !== width) slotReadbackCanvas.width = width;
+        if (slotReadbackCanvas.height !== height) slotReadbackCanvas.height = height;
+        slotReadbackContext.clearRect(0, 0, width, height);
+        slotReadbackContext.drawImage(canvas, 0, 0, width, height);
+        return slotReadbackContext.getImageData(0, 0, width, height)?.data || null;
+      }
+    }
+    // Test/minimal DOM fallback. Real Huntera pages always take the isolated
+    // readback path above.
+    return canvas.getContext("2d", { willReadFrequently: true })?.getImageData(0, 0, width, height)?.data || null;
+  }
+
   function slotIconFingerprint(slot) {
     const canvas = slot?.querySelector?.("canvas.slot-icon, canvas");
     if (!canvas || typeof canvas.getContext !== "function") return null;
     try {
       const width = Number(canvas.width);
       const height = Number(canvas.height);
-      const pixels = canvas.getContext("2d", { willReadFrequently: true })?.getImageData(0, 0, width, height)?.data;
+      const pixels = slotIconPixels(canvas, width, height);
       if (!pixels?.length) return null;
       let hash = 2166136261;
       let visiblePixels = 0;

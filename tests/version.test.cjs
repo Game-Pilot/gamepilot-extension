@@ -9,6 +9,9 @@ function versionApi(latest = "0.8.4", installed = "0.8.3") {
     URL,
     Date,
     console,
+    AbortController,
+    setTimeout,
+    clearTimeout,
     fetch: async () => ({ ok: true, json: async () => ({ version: latest }) }),
     chrome: {
       sidePanel: { setPanelBehavior: async () => {} },

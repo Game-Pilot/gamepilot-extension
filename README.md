@@ -2,6 +2,8 @@
 
 Extensão Manifest V3 do MVP. Ela conecta uma aba do Huntera ao GamePilot, envia heartbeat/telemetria à API e recebe comandos do painel.
 
+A conexão principal usa um único WebSocket autenticado no service worker para todas as abas Huntera. O canal envia keepalive a cada 20 segundos, reconecta com backoff e jitter e exige confirmação identificada de cada mensagem. Heartbeats são idempotentes e comandos usam entrega pelo menos uma vez com deduplicação por `commandId` na aba. Se a rede ou um proxy bloquear WebSockets, estado e comandos continuam pelo transporte HTTP de recuperação.
+
 O adaptador Huntera detecta personagem, vocação, level, vida, mana, experiência, stamina, gold, capacidade, métricas do analisador e estado da caçada. Os comandos do MVP são iniciar, parar/retornar, abrir loja e destinar o loot conforme a política compartilhada pela conta: ignorar a coleta, guardar no armazém, vender no NPC ou comparar automaticamente com o leilão.
 
 A configuração global de loot é aplicada antes de entrar em qualquer caçada e sincronizada por comando em todas as abas conectadas quando for alterada, inclusive durante uma caçada ativa.

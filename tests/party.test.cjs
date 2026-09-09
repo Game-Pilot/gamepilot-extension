@@ -70,6 +70,7 @@ function adapter(cards = [], lootControls = []) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
         document.querySelectorAll = fixture.querySelectorAll || (() => []);
+        document.createElement = fixture.createElement;
       },
       configureFixture(fixture) {
         readState = fixture.readState;
@@ -599,6 +600,27 @@ test("prefers an identical depot stack when no empty slot is available", () => {
   const warehouse = { querySelectorAll: () => [other, matching] };
   const source = { querySelector: () => sourceCanvas };
   assert.equal(api.warehouseTargetForItem(warehouse, source, true), matching);
+});
+
+test("reads slot pixels through an isolated readback canvas", () => {
+  const api = adapter();
+  let copied = null;
+  const readback = {
+    width: 0, height: 0,
+    getContext(_kind, options) {
+      assert.equal(options.willReadFrequently, true);
+      return {
+        clearRect() {},
+        drawImage(canvas) { copied = canvas; },
+        getImageData: () => ({ data: new Uint8ClampedArray([10, 2, 3, 255]) })
+      };
+    }
+  };
+  api.configureDocument({ createElement: () => readback });
+  const ownedCanvas = { width: 1, height: 1, getContext() { throw new Error("Huntera canvas must not be read directly"); } };
+  const fingerprint = api.slotIconFingerprint({ querySelector: () => ownedCanvas });
+  assert.equal(copied, ownedCanvas);
+  assert.match(fingerprint, /^1x1:/);
 });
 
 test("uses Huntera's rolling empty depot slot for a non-grouped item", () => {

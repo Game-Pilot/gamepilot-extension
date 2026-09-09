@@ -7,6 +7,7 @@ let automationPayload = {};
 let automationBusy = false;
 let commandBusy = false;
 let activeCommand = Promise.resolve();
+const activeCommandIds = new Set();
 let interrupting = false;
 let stateRequestPending = false;
 let runtimeMessagingAvailable = true;
@@ -70,6 +71,10 @@ function stableConnectionKey() {
   }
 }
 const connectionKey = stableConnectionKey();
+// Unlike connectionKey, this changes on every document load. It lets the API
+// ignore a delayed pagehide from the previous document after an F5 has already
+// established the replacement connection.
+const connectionInstanceId = globalThis.crypto?.randomUUID?.() || `document-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 // Persist the automation state per tab so an extension reload or an F5 mid-hunt
 // doesn't silently disable the auto-return. sessionStorage is tab-scoped and
@@ -77,6 +82,20 @@ const connectionKey = stableConnectionKey();
 // (auto-return, potion cycle) without needing a manual Stop+Start. Synced on
 // every state post; restored once on load, before the first post.
 const AUTOMATION_KEY = "gamepilot.automation";
+const COMMAND_HISTORY_KEY = "gamepilot.completedCommands";
+const completedCommands = (() => {
+  try {
+    const entries = JSON.parse(sessionStorage.getItem(COMMAND_HISTORY_KEY) || "[]");
+    return new Map(Array.isArray(entries) ? entries.slice(-50) : []);
+  } catch { return new Map(); }
+})();
+
+function rememberCompletedCommand(commandId, completion) {
+  if (!commandId) return;
+  completedCommands.set(commandId, completion);
+  while (completedCommands.size > 50) completedCommands.delete(completedCommands.keys().next().value);
+  try { sessionStorage.setItem(COMMAND_HISTORY_KEY, JSON.stringify([...completedCommands])); } catch { /* storage unavailable */ }
+}
 function persistAutomationState() {
   try {
     sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode, lastOperationError }));
@@ -140,8 +159,12 @@ function sendRuntimeMessage(message, callback) {
 
 function sendEvent(event) {
   return new Promise((resolve) => {
+    const identifiedEvent = {
+      ...(event || {}),
+      eventId: event?.eventId || globalThis.crypto?.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    };
     const sent = sendRuntimeMessage(
-      { type: "agent-event", connectionKey, event },
+      { type: "agent-event", connectionKey, event: identifiedEvent },
       (response, error) => resolve(response || { ok: false, error: error?.message || "Extensão indisponível" })
     );
     if (!sent) resolve({ ok: false, error: "Extensão indisponível" });
@@ -150,7 +173,7 @@ function sendEvent(event) {
 
 async function reportCommand(command, commandId, status = "completed", errorMessage = null, result = null) {
   if (!commandId) return;
-  await sendEvent({ type: "command.executed", message: `Comando ${command} recebido pela extensão`, details: { command, commandId, status, errorMessage, ...(result ? { result } : {}) } });
+  await sendEvent({ eventId: `command-${commandId}-${status}`, type: "command.executed", message: `Comando ${command} recebido pela extensão`, details: { command, commandId, status, errorMessage, ...(result ? { result } : {}) } });
 }
 
 function appliedActionRules(rules, configured) {
@@ -176,6 +199,11 @@ async function sellAndCloseStore(adapter, loot = {}) {
 
 async function handleCommand(command, commandId, payload = {}) {
   if (!command) return;
+  const previousCompletion = commandId ? completedCommands.get(commandId) : null;
+  if (previousCompletion) {
+    await reportCommand(command, commandId, previousCompletion.status, previousCompletion.errorMessage, previousCompletion.result);
+    return;
+  }
   const adapter = globalThis.GamePilotAdapters?.huntera;
   let result = { ok: false, error: "Adaptador Huntera não carregado" };
   try {
@@ -366,7 +394,15 @@ async function handleCommand(command, commandId, payload = {}) {
   else if (command === "stop") mode = "idle";
   else if (mode === "error") mode = adapter?.readState?.().inHunt ? "hunting" : "idle"; // a later success clears a stale error banner
   showBanner(result.ok ? `${command} concluído` : result.error);
-  await reportCommand(command, commandId, result.ok ? "completed" : "failed", result.ok ? null : result.error, command === "quote-imbuements" && result.ok ? result : null);
+  const completion = {
+    status: result.ok ? "completed" : "failed",
+    errorMessage: result.ok ? null : result.error,
+    result: command === "quote-imbuements" && result.ok ? result : null
+  };
+  // Persist before reporting. If the completion acknowledgement is lost, a
+  // redelivered command only resends its result and never repeats game input.
+  rememberCompletedCommand(commandId, completion);
+  await reportCommand(command, commandId, completion.status, completion.errorMessage, completion.result);
 }
 
 function thresholdReached(gameState) {
@@ -549,6 +585,32 @@ function operationReport(gameState) {
   };
 }
 
+function acceptAgentCommand(response) {
+  if (!response?.command) return false;
+  if (response.commandId && activeCommandIds.has(response.commandId)) return true;
+  commandBusy = true;
+  if (response.commandId) activeCommandIds.add(response.commandId);
+  const interrupt = ["stop", "return-town"].includes(response.command);
+  if (interrupt) {
+    interrupting = true;
+    automationEnabled = false;
+    globalThis.GamePilotAdapters?.huntera?.cancelPending?.();
+  }
+  const previous = activeCommand;
+  activeCommand = (async () => {
+    await previous.catch(() => {});
+    while (automationBusy) await new Promise((resolve) => setTimeout(resolve, 50));
+    commandBusy = true;
+    try { await handleCommand(response.command, response.commandId, response.payload); }
+    finally {
+      if (response.commandId) activeCommandIds.delete(response.commandId);
+      commandBusy = false;
+      interrupting = false;
+    }
+  })().catch((error) => { showBanner(error.message || "Falha ao executar comando"); });
+  return true;
+}
+
 function sendState() {
   if (!runtimeMessagingAvailable) return;
   lastStatePostAt = Date.now();
@@ -588,7 +650,7 @@ function sendState() {
   void runAutoTrainingCycle(gameState);
   void runArrowSwitchCycle(gameState);
   void runAutomationCycle(gameState);
-  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, operation: operationReport(gameState), lastError: lastOperationError } };
+  const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, operation: operationReport(gameState), lastError: lastOperationError, connectionInstanceId } };
   // Busy tabs still ask for stop/return interrupts; the worker requests only
   // those commands. A normal command must remain queued until we are idle.
   const wantsCommand = !commandBusy && !automationBusy;
@@ -599,24 +661,7 @@ function sendState() {
     if (isInvalidatedExtensionContext(runtimeError)) return;
     if (runtimeError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
-    if (response.command) {
-      commandBusy = true;
-      const interrupt = ["stop", "return-town"].includes(response.command);
-      if (interrupt) {
-        interrupting = true;
-        automationEnabled = false;
-        globalThis.GamePilotAdapters?.huntera?.cancelPending?.();
-      }
-      const previous = activeCommand;
-      activeCommand = (async () => {
-        await previous.catch(() => {});
-        // Automation may be unwinding a cancelled adapter wait.
-        while (automationBusy) await new Promise((resolve) => setTimeout(resolve, 50));
-        commandBusy = true;
-        try { await handleCommand(response.command, response.commandId, response.payload); }
-        finally { commandBusy = false; interrupting = false; }
-      })().catch((error) => { showBanner(error.message || "Falha ao executar comando"); });
-    } else {
+    if (!acceptAgentCommand(response)) {
       showBanner(`conectado · ${mode}`);
     }
   });
@@ -626,7 +671,7 @@ function sendState() {
 // tab closes, instead of waiting for its last_seen_at to go stale. The server
 // staleness sweep is the real guarantee; this just makes the common case fast.
 window.addEventListener("pagehide", () => {
-  sendRuntimeMessage({ type: "agent-disconnect", connectionKey });
+  sendRuntimeMessage({ type: "agent-disconnect", connectionKey, connectionInstanceId, disconnectedAt: new Date().toISOString() });
 });
 
 // The 3s timer below is throttled to ~1/min by Chrome while the tab is in the
@@ -649,6 +694,10 @@ if (runtimeMessagingAvailable) stateIntervalId = setInterval(sendState, 3000);
 
 // Read-only popup access, independent of API pairing and heartbeat timing.
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message.type === "agent-command") {
+    respond({ accepted: acceptAgentCommand(message) });
+    return;
+  }
   if (message.type !== "hunt-analyzer-state") return;
   try {
     const state = globalThis.GamePilotAdapters?.huntera?.readState?.();
