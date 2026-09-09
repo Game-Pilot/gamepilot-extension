@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, goldAmount,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -97,6 +97,108 @@ function adapter(cards = [], lootControls = []) {
   vm.runInContext(source, context);
   return context.testAdapter;
 }
+
+function imbuementElement({ text = "", className = "", disabled = false, dataset = {}, children = [], strong = null, offerName = null } = {}) {
+  return {
+    textContent: text, className, disabled, dataset, hidden: false,
+    classList: { contains: (name) => className.split(/\s+/).includes(name) },
+    getBoundingClientRect: () => ({ width: 100, height: 30 }),
+    getAttribute: () => null,
+    querySelector: (selector) => selector.includes(".imbue-offer-name") && offerName
+      ? { textContent: offerName }
+      : selector.includes("strong") && strong ? { textContent: strong } : null,
+    querySelectorAll: (selector) => selector.includes("button") || selector.includes("slot") ? children : []
+  };
+}
+
+test("matches the current Huntera imbuement item, empty slot, family and tier", () => {
+  const api = adapter();
+  const empty = imbuementElement({ text: "Vazio", className: "imbue-slot" });
+  const used = imbuementElement({ text: "Powerful Void", className: "imbue-slot" });
+  const helmet = imbuementElement({ text: "royal helmet equipado Vazio", className: "imbue-item", children: [used, empty], strong: "royal helmet" });
+  const voidOption = imbuementElement({ text: "Void Converts 3% of the damage dealt into mana.", className: "imbue-line", strong: "Void" });
+  const powerful = imbuementElement({ text: "Powerful", className: "imbue-tier-tab" });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes(".imbue-item")) return [helmet];
+      if (selector.includes(".imbue-line")) return [voidOption];
+      if (selector.includes(".imbue-tier-tab")) return [powerful];
+      return [];
+    }
+  };
+  const application = { itemId: 123, itemName: "Royal Helmet", imbuementKey: "powerful-void", imbuementName: "Powerful Void" };
+  assert.equal(api.imbuementItem(root, application), helmet);
+  assert.equal(api.emptyImbuementSlot(helmet), empty);
+  assert.equal(api.imbuementOption(root, application), voidOption);
+  assert.equal(api.imbuementTier(root, application), powerful);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.imbuementParts(application))), { tier: "powerful", family: "void" });
+});
+
+test("parses the gold fee shown by the Huntera shrine", () => {
+  const api = adapter();
+  assert.equal(api.goldAmount("Imbuir — 5.000 gp"), 5000);
+  assert.equal(api.goldAmount("Apply — 25,000 gold"), 25000);
+  assert.equal(api.goldAmount("Sem custo"), null);
+});
+
+test("reads the imbuement offer name before its concatenated description", () => {
+  const api = adapter();
+  const vampirism = imbuementElement({
+    text: "VampirismConverts 5% of the damage dealt into hit points.",
+    className: "imbue-line",
+    offerName: "Vampirism"
+  });
+  const root = { querySelectorAll: () => [vampirism] };
+  assert.equal(api.imbuementOption(root, { imbuementKey: "basic-vampirism", imbuementName: "Basic Vampirism" }), vampirism);
+});
+
+test("reads the protected imbuement price even when missing sources disable apply", () => {
+  const api = adapter();
+  const apply = imbuementElement({ text: "Imbuir — 15.000 gp", className: "imbue-apply", disabled: true });
+  const root = { querySelectorAll: (selector) => selector === ".imbue-apply" || selector === "button" ? [apply] : [] };
+  assert.equal(api.imbuementApplyButton(root), apply);
+  assert.equal(api.goldAmount(api.imbuementApplyButton(root).textContent), 15000);
+});
+
+test("derives market materials and protected shrine fees from the approved imbuements", () => {
+  const api = adapter();
+  const demand = api.imbuementMaterials([
+    { imbuementKey: "basic-vampirism", imbuementName: "Basic Vampirism" },
+    { imbuementKey: "basic-vampirism", imbuementName: "Basic Vampirism" },
+    { imbuementKey: "basic-void", imbuementName: "Basic Void" },
+    { imbuementKey: "basic-strike", imbuementName: "Basic Strike" }
+  ]);
+  assert.equal(demand.ok, true);
+  assert.equal(demand.shrineFee, 60000);
+  assert.deepEqual(JSON.parse(JSON.stringify(demand.materials)), [
+    { name: "Vampire Teeth", marketName: "vampire teeth", required: 50 },
+    { name: "Rope Belt", marketName: "rope belt", required: 25 },
+    { name: "Protective Charms", marketName: "protective charm", required: 20 }
+  ]);
+});
+
+test("prices the missing material across the cheapest market sell offers", () => {
+  const api = adapter();
+  const quote = api.quoteMarketMaterial({ name: "Rope Belt", marketName: "rope belt", required: 25 }, 5, [
+    { quantity: 8, unitPrice: 1000 },
+    { quantity: 20, unitPrice: 1200 }
+  ]);
+  assert.equal(quote.missing, 20);
+  assert.equal(quote.available, true);
+  assert.equal(quote.cost, 22400);
+  assert.deepEqual(JSON.parse(JSON.stringify(quote.fills)), [
+    { quantity: 8, unitPrice: 1000, cost: 8000 },
+    { quantity: 12, unitPrice: 1200, cost: 14400 }
+  ]);
+});
+
+test("does not authorize a market quote when sell offers cannot fill the demand", () => {
+  const api = adapter();
+  const quote = api.quoteMarketMaterial({ name: "Protective Charms", required: 20 }, 2, [{ quantity: 10, unitPrice: 500 }]);
+  assert.equal(quote.available, false);
+  assert.equal(quote.unavailable, 8);
+  assert.equal(quote.cost, null);
+});
 
 test("tracks only visible monsters from Huntera creature socket events", () => {
   const api = adapter();

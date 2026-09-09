@@ -148,9 +148,9 @@ function sendEvent(event) {
   });
 }
 
-async function reportCommand(command, commandId, status = "completed", errorMessage = null) {
+async function reportCommand(command, commandId, status = "completed", errorMessage = null, result = null) {
   if (!commandId) return;
-  await sendEvent({ type: "command.executed", message: `Comando ${command} recebido pela extensão`, details: { command, commandId, status, errorMessage } });
+  await sendEvent({ type: "command.executed", message: `Comando ${command} recebido pela extensão`, details: { command, commandId, status, errorMessage, ...(result ? { result } : {}) } });
 }
 
 function appliedActionRules(rules, configured) {
@@ -181,7 +181,7 @@ async function handleCommand(command, commandId, payload = {}) {
   try {
     const pendingBar = adapter?.readCombatBarJournal?.();
     if (pendingBar && pendingBar.status !== "restored" && ["start", "start-hunt", "configure-actions", "bestiary-next", "prepare-group"].includes(command)) throw new Error("Restaure o teste de barra pendente antes de iniciar outra operação");
-    if (["start", "start-hunt", "configure-actions", "bestiary-next", "combat-bar-test", "combat-bar-restore", "imbue-set"].includes(command)) {
+    if (["start", "start-hunt", "configure-actions", "bestiary-next", "combat-bar-test", "combat-bar-restore", "quote-imbuements", "imbue-set"].includes(command)) {
       const state = adapter?.readState?.();
       const expected = String(payload.characterName || payload.character_name || payload.character?.name || "").trim();
       const actual = String(state?.character?.name || "").trim();
@@ -273,6 +273,10 @@ async function handleCommand(command, commandId, payload = {}) {
       }
       automationEnabled = false; automationActions = []; automationPayload = {}; lastReturnAt = 0; mode = "returning"; showBanner(command === "stop" ? "parando operação" : "retornando para a cidade"); result = await adapter?.leaveHunt?.(payload) || result;
       if (result.ok) { mode = command === "stop" ? "idle" : "returning"; await sendEvent({ type: "hunt.returned", message: result.alreadyOut ? "Personagem já estava fora da caçada" : "Personagem retornou para a cidade", details: { payload, command } }); }
+    } else if (command === "quote-imbuements") {
+      automationEnabled = false;
+      showBanner("consultando materiais e ofertas pelo Market");
+      result = await adapter?.quoteImbuementPlan?.(payload) || result;
     } else if (command === "imbue-set") {
       automationEnabled = false;
       showBanner("revalidando set, materiais e limite de gasto");
@@ -362,7 +366,7 @@ async function handleCommand(command, commandId, payload = {}) {
   else if (command === "stop") mode = "idle";
   else if (mode === "error") mode = adapter?.readState?.().inHunt ? "hunting" : "idle"; // a later success clears a stale error banner
   showBanner(result.ok ? `${command} concluído` : result.error);
-  await reportCommand(command, commandId, result.ok ? "completed" : "failed", result.ok ? null : result.error);
+  await reportCommand(command, commandId, result.ok ? "completed" : "failed", result.ok ? null : result.error, command === "quote-imbuements" && result.ok ? result : null);
 }
 
 function thresholdReached(gameState) {

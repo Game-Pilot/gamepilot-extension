@@ -55,7 +55,7 @@
     155: "creature-resync"
   });
 
-  const COMMAND_TYPES = Object.freeze({ "select-ammo": 77 });
+  const COMMAND_TYPES = Object.freeze({ "market-accept": 44, "market-browse": 45, "market-close": 47, "market-open": 51, "select-ammo": 77 });
 
   const activeSockets = new Set();
   const latest = {
@@ -274,10 +274,16 @@
       const requestId = String(event.data.requestId || "");
       const command = String(event.data.command || "");
       const itemId = Number(event.data.payload?.itemId);
+      const offerId = String(event.data.payload?.offerId || "");
+      const amount = Number(event.data.payload?.amount);
       const socket = [...activeSockets].find((candidate) => candidate.readyState === WebSocket.OPEN);
-      const payload = command === "select-ammo" && Number.isInteger(itemId) && itemId > 0
-        ? { itemId }
-        : null;
+      const payload = ["market-open", "market-close"].includes(command)
+        ? {}
+        : command === "market-accept" && offerId.length > 0 && offerId.length <= 128 && Number.isInteger(amount) && amount > 0 && amount <= 10000
+          ? { offerId, amount }
+        : ["market-browse", "select-ammo"].includes(command) && Number.isInteger(itemId) && itemId > 0
+          ? { itemId }
+          : null;
       if (!payload) {
         post("command-result", { requestId, ok: false, error: "Comando do Huntera inválido" });
       } else if (!socket) {
