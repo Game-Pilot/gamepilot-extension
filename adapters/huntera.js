@@ -2541,7 +2541,13 @@
   async function confirmSlotMoveQuantity(expectedCount) {
     let dialog = null;
     let amountInput = null;
+    let moveAll = null;
     const appeared = await waitUntil(() => {
+      dialog = [...document.querySelectorAll(".drop-choice-menu")].find(visible) || null;
+      if (dialog) {
+        moveAll = buttonMatching(dialog, /^(?:mover tudo|move all)\s*\(\d+\)$/i);
+        return true;
+      }
       const inputs = [...document.querySelectorAll([
         ".move-quantity-dialog input", ".quantity-dialog input", ".stack-dialog input",
         ".trade-dialog input", ".modal input", "[role='dialog'] input"
@@ -2552,6 +2558,16 @@
       return Boolean(dialog && amountInput);
     }, 800, 50);
     if (!appeared) return { ok: true, prompted: false };
+
+    if (!amountInput) {
+      if (!moveAll) return { ok: false, prompted: true, error: "Botão Mover tudo não encontrado no menu de transferência" };
+      const count = Number(moveAll.textContent.match(/\((\d+)\)/)?.[1]);
+      if (count !== Number(expectedCount)) return { ok: false, prompted: true, error: "A quantidade do menu de transferência não corresponde à pilha selecionada" };
+      moveAll.click();
+      const closed = await waitUntil(() => !visible(dialog), 2500, 50);
+      return closed ? { ok: true, prompted: true, count }
+        : { ok: false, prompted: true, error: "O Huntera não fechou o menu de transferência" };
+    }
 
     const maximum = Number(amountInput.max);
     const desired = Math.max(1, Math.min(Math.max(1, Number(expectedCount) || 1), Number.isFinite(maximum) && maximum > 0 ? maximum : Infinity));

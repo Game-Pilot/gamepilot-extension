@@ -609,13 +609,30 @@ test("confirms the full stack when moving a grouped item", async () => {
     hidden: false, getBoundingClientRect: () => ({ width: 100, height: 30 }),
     getAttribute: () => "Quantidade", closest: () => dialog, dispatchEvent() {}
   };
-  api.configureDocument({ querySelectorAll: () => open ? [input] : [] });
+  api.configureDocument({ querySelectorAll: (selector) => selector === ".drop-choice-menu" ? [] : open ? [input] : [] });
   // The adapter's value helper supports browser inputs; this fixture exposes
   // the same own value property and event surface used by the fallback path.
   const result = await api.confirmSlotMoveQuantity(12);
   assert.deepEqual({ ...result }, { ok: true, prompted: true, count: 12 });
   assert.equal(input.value, "12");
   assert.equal(clicks, 1);
+});
+
+test("confirms Huntera's input-free drop-choice menu and rejects a stale stack", async () => {
+  const api = adapter();
+  let open = true;
+  let clicks = 0;
+  const button = { textContent: "Mover tudo (84)", disabled: false,
+    getBoundingClientRect: () => ({ width: 100, height: 30 }),
+    click() { clicks++; open = false; } };
+  const menu = { querySelectorAll: () => [button],
+    getBoundingClientRect: () => ({ width: open ? 200 : 0, height: open ? 100 : 0 }) };
+  api.configureDocument({ querySelectorAll: selector => selector === ".drop-choice-menu" && open ? [menu] : [] });
+  assert.equal((await api.confirmSlotMoveQuantity(47)).ok, false);
+  assert.equal(clicks, 0);
+  assert.deepEqual({ ...await api.confirmSlotMoveQuantity(84) }, { ok: true, prompted: true, count: 84 });
+  assert.equal(clicks, 1);
+  assert.equal(open, false);
 });
 
 test("prefers an identical depot stack when no empty slot is available", () => {
