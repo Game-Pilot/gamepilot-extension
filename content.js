@@ -24,6 +24,10 @@ const ARROW_SWITCH_RETRY_MS = 1000;
 const RECOVERY_CONFIRM_MS = 5000;
 let recoveryNoticeSent = false;
 let characterSelectionSince = 0;
+let recoveryPending = false;
+let lastRecoveryAttemptAt = 0;
+const RECOVERY_RETRY_MS = 30000;
+const RECOVERY_RELOAD_MS = 60000;
 let hunteraPageTitle = document.title;
 let characterPageTitle = null;
 
@@ -98,7 +102,7 @@ function rememberCompletedCommand(commandId, completion) {
 }
 function persistAutomationState() {
   try {
-    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode, lastOperationError }));
+    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode, lastOperationError, recoveryPending, lastRecoveryAttemptAt }));
   } catch { /* storage unavailable */ }
 }
 function restoreAutomationState() {
@@ -106,6 +110,8 @@ function restoreAutomationState() {
     const saved = JSON.parse(sessionStorage.getItem(AUTOMATION_KEY) || "null");
     if (!saved || typeof saved !== "object") return;
     automationEnabled = Boolean(saved.automationEnabled);
+    recoveryPending = Boolean(saved.recoveryPending);
+    lastRecoveryAttemptAt = Number(saved.lastRecoveryAttemptAt) || 0;
     automationConfig = saved.automationConfig && typeof saved.automationConfig === "object" ? saved.automationConfig : {};
     automationActions = Array.isArray(saved.automationActions) ? saved.automationActions : [];
     automationPayload = saved.automationPayload && typeof saved.automationPayload === "object" ? saved.automationPayload : {};
@@ -474,7 +480,7 @@ function validateAutomationCharacter(gameState) {
   const expected = String(automationPayload.characterName || automationPayload.character_name || automationPayload.character?.name || "").trim();
   const actual = String(gameState?.character?.name || "").trim();
   if (!actual) return false; // A reconnect screen is not a character identity.
-  if (expected && actual === expected) return true;
+  if (expected && actual === expected) return gameState?.socket?.connected !== false;
   automationEnabled = false;
   automationActions = [];
   automationConfig = {};
@@ -591,6 +597,84 @@ async function runAutoTrainingCycle(gameState) {
   }
 }
 
+// Recovery owns the same lock as the other automatic operations. Keep the full
+// payload (including bestiary, loot and group role) instead of rebuilding it
+// from API defaults. There is deliberately no attempt limit for server saves.
+async function runRecoveryCycle(gameState) {
+  if (!automationEnabled) {
+    recoveryPending = false;
+    characterSelectionSince = 0;
+    return;
+  }
+  if (commandBusy || automationBusy || interrupting) return;
+  const expected = String(automationPayload.characterName || automationPayload.character_name || automationPayload.character?.name || "").trim();
+  if (!expected) { validateAutomationCharacter(gameState); return; }
+  const disconnected = gameState.characterSelection || gameState.socket?.connected === false;
+  if (disconnected) {
+    if (!characterSelectionSince) characterSelectionSince = Date.now();
+    if (Date.now() - characterSelectionSince < RECOVERY_CONFIRM_MS) return;
+    recoveryPending = true;
+    mode = "reconnecting";
+    persistAutomationState();
+    if (!recoveryNoticeSent) {
+      recoveryNoticeSent = true;
+      void sendEvent({ type: "connection.lost", message: "Conexão interrompida; aguardando o Huntera voltar", details: { character: expected } });
+    }
+  } else characterSelectionSince = 0;
+  if (!recoveryPending) return;
+  mode = "reconnecting";
+  showBanner("aguardando servidor; retomada automática ativada");
+  if (Date.now() - lastRecoveryAttemptAt < RECOVERY_RETRY_MS) return;
+  const adapter = globalThis.GamePilotAdapters?.huntera;
+  automationBusy = true;
+  try {
+    // A closed socket can leave the old hunt DOM on screen indefinitely.
+    // Reload only after a grace period and persist the retry clock first.
+    if (disconnected && !gameState.characterSelection) {
+      if (Date.now() - Math.max(characterSelectionSince, lastRecoveryAttemptAt) < RECOVERY_RELOAD_MS) return;
+      lastRecoveryAttemptAt = Date.now();
+      persistAutomationState();
+      location.reload();
+      return;
+    }
+    lastRecoveryAttemptAt = Date.now();
+    persistAutomationState();
+    if (gameState.characterSelection) {
+      const selected = await adapter?.selectCharacter?.(expected);
+      if (!selected?.ok) throw new Error(selected?.error || "Aguardando personagem ficar disponível");
+    }
+    const current = adapter?.readState?.();
+    if (!automationEnabled || interrupting || !validateAutomationCharacter(current)) return;
+    if (current.socket?.connected !== true || !current.detected || current.characterSelection) return;
+    if (adapter?.readCombatBarJournal?.() && adapter.readCombatBarJournal().status !== "restored") return;
+    const configured = await adapter?.configureActions?.(automationActions);
+    if (!configured?.ok) throw new Error(configured?.error || "Não foi possível reaplicar as ações");
+    if (!automationEnabled || interrupting) return;
+    const latest = adapter.readState();
+    if (!validateAutomationCharacter(latest) || latest.socket?.connected !== true) return;
+    if (!latest.inHunt && !latest.training?.active) {
+      if (!latest.inTown) return;
+      const payload = { ...automationPayload, hunt: automationConfig, resume: true };
+      const result = payload.operation === "group-hunt"
+        ? payload.group?.role === "leader" ? await adapter.startGroupHunt(payload) : await adapter.acceptGroupHunt(payload)
+        : await adapter.startHunt(payload);
+      if (!result?.ok) throw new Error(result?.error || "Servidor ainda indisponível para retomar a caçada");
+    }
+    if (!automationEnabled || interrupting) return;
+    recoveryPending = false;
+    recoveryNoticeSent = false;
+    lastOperationError = null;
+    mode = latest.training?.active ? "training" : "hunting";
+    void sendEvent({ type: "connection.restored", message: "Conexão restabelecida e atividade retomada", details: { character: expected, automatic: true } });
+  } catch (error) {
+    // A failed login/start during maintenance must never discard the intent.
+    lastOperationError = { at: new Date().toISOString(), command: "reconnect", message: error.message };
+  } finally {
+    automationBusy = false;
+    persistAutomationState();
+  }
+}
+
 let lastStatePostAt = 0;
 
 function operationReport(gameState) {
@@ -634,6 +718,8 @@ function acceptAgentCommand(response) {
   if (interrupt) {
     interrupting = true;
     automationEnabled = false;
+    recoveryPending = false;
+    persistAutomationState();
     globalThis.GamePilotAdapters?.huntera?.cancelPending?.();
   }
   const previous = activeCommand;
@@ -670,26 +756,12 @@ function sendState() {
     else if (mode === "error" && gameState.detected && gameState.inTown) mode = "idle";
     else if (["selling", "hunting", "returning", "starting", "training"].includes(mode)) mode = "idle";
   }
-  // During an F5 the SPA can briefly expose its character-selection shell before
-  // restoring the active hunt. Only recover when that state remains stable and
-  // there is no evidence of a loaded character or hunt.
-  const recoveryCandidate = gameState.characterSelection && !gameState.detected && !gameState.inHunt;
-  if (recoveryCandidate && !characterSelectionSince) characterSelectionSince = Date.now();
-  if (!recoveryCandidate) characterSelectionSince = 0;
-  if (recoveryCandidate && automationEnabled && Date.now() - characterSelectionSince >= RECOVERY_CONFIRM_MS) {
-    if (!recoveryNoticeSent) {
-      recoveryNoticeSent = true;
-      mode = "reconnecting";
-      showBanner("conexão perdida; selecionando personagem");
-      void sendEvent({ type: "connection.lost", message: "Huntera voltou para a tela de personagens", details: { character: automationPayload.characterName || automationPayload.character?.name || null } });
-    }
-  } else if ((gameState.detected || gameState.inHunt) && recoveryNoticeSent) {
-    recoveryNoticeSent = false;
-    void sendEvent({ type: "connection.restored", message: "Personagem carregado novamente no Huntera", details: { character: gameState.character?.name || null } });
+  void runRecoveryCycle(gameState);
+  if (!recoveryPending) {
+    void runAutoTrainingCycle(gameState);
+    void runArrowSwitchCycle(gameState);
+    void runAutomationCycle(gameState);
   }
-  void runAutoTrainingCycle(gameState);
-  void runArrowSwitchCycle(gameState);
-  void runAutomationCycle(gameState);
   const reportedGameState = { ...gameState, gamepilot: { automationEnabled, hunt: automationConfig, bestiary: automationPayload.bestiary || null, operation: operationReport(gameState), lastError: lastOperationError, connectionInstanceId } };
   // Busy tabs still ask for stop/return interrupts; the worker requests only
   // those commands. A normal command must remain queued until we are idle.

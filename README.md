@@ -53,3 +53,9 @@ Os eventos reais mostraram hits antes das notificações de magia e efeitos bloo
 ## Recordes e tempo por faixa de vida
 
 A sidebar registra a menor vida em HP, a menor porcentagem de vida e o maior dano de um único acerto próprio. O gráfico mostra o tempo e sua porcentagem em dez faixas de 10%, com 100% separado. Integra a última vida válida até o próximo evento ao vivo durante a caçada/retorno; exclui intervalos inativos ou sem vida conhecida e não avança apenas por abrir o painel. Nova sessão/reconexão reinicia a medição. Fechar a sidebar preserva os dados na aba; recarregar a aba descarta a coleta local.
+
+## Retomada após queda e server save
+
+Durante uma caçada automatizada, a extensão preserva por aba o personagem e a configuração completa da atividade. Após confirmar a desconexão por 5 segundos, tenta selecionar novamente o personagem e retomar a atividade a cada 30 segundos, sem limite de tentativas. Uma conexão fechada que deixa a página travada provoca recarga após 60 segundos; o estado de recuperação sobrevive à recarga. As ações são reaplicadas e uma caçada já restaurada pelo jogo não é iniciada novamente. Grupos mantêm o papel de líder ou participante.
+
+O comando Parar cancela a retomada. Trocar para outro personagem desativa a automação. A aba deve permanecer aberta, com a extensão ativa e a sessão do jogo autenticada; se o jogo exigir novo login, será necessário autenticar novamente. Os intervalos podem aumentar quando o navegador suspende a aba. A recuperação é reativa e também cobre manutenção fora do horário habitual de meio-dia.
