@@ -2,6 +2,49 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {create} = require('../observed-analyzer.js');
 const event = (sequence, type, payload, code) => ({sequence, type, payload, code, receivedAt: new Date(1788800000000 + sequence * 1000).toISOString()});
+
+test('health duration weights elapsed time, includes full health and freezes on reads', () => {
+  const a = create();
+  a.accept(event(1,'player-stats',{health:100,maxHealth:100}),7);
+  a.accept(event(3,'player-stats',{health:85,maxHealth:100}),7);
+  a.accept(event(4,'player-stats',{health:85,maxHealth:100}),7);
+  a.accept(event(9,'player-stats',{health:0,maxHealth:100}),7);
+  a.accept(event(11,'wire-20',{attackerId:7,targetId:8,value:321},20),7);
+  a.accept(event(11,'wire-20',{attackerId:7,targetId:8,value:999},20),7);
+  const s=a.read();
+  assert.equal(s.healthObservedMs,10000);
+  assert.equal(s.healthTimeBucketsMs[10],2000);
+  assert.equal(s.healthTimeBucketsMs[8],6000);
+  assert.equal(s.healthTimeBucketsMs[0],2000);
+  assert.equal(s.healthTimeBucketsMs.reduce((a,b)=>a+b),10000);
+  assert.equal(s.minimumHealth,0);
+  assert.equal(s.minimumHealthPercent,0);
+  assert.equal(s.maximumHit,321);
+  assert.deepEqual(a.read(),s);
+  a.accept(event(12,'hunt-analyzer-session',{startedAt:1}),7);
+  a.accept(event(13,'hunt-analyzer-session',{startedAt:2}),7);
+  assert.equal(a.read().healthObservedMs,0);
+  assert.equal(a.read().minimumHealth,null);
+  assert.equal(a.read().maximumHit,null);
+});
+
+test('health time excludes unknown and inactive intervals and ignores replay', () => {
+  const a=create();
+  a.accept(event(1,'player-stats',{health:100,maxHealth:100}),7,true);
+  a.accept(event(2,'other',{}),7);
+  a.accept(event(3,'player-stats',{health:50,maxHealth:100}),7);
+  a.accept(event(5,'other',{}),7);
+  a.accept(event(6,'other',{}),7,false,false);
+  a.accept(event(20,'other',{}),7);
+  a.accept(event(21,'player-stats',{health:90,maxHealth:100}),7);
+  a.accept(event(22,'player-stats',{health:-1,maxHealth:100}),7);
+  a.accept(event(30,'other',{}),7);
+  assert.equal(a.read().healthObservedMs,3000);
+  assert.equal(a.read().healthTimeBucketsMs[5],2000);
+  assert.equal(a.read().healthTimeBucketsMs[9],1000);
+  assert.equal(a.read().minimumHealth,50);
+});
+
 test('counts only live own-player events, deduplicates replay and resets on session change', () => {
   const a = create();
   a.accept(event(1, 'hunt-analyzer-session', {startedAt: 100}), 7, true);

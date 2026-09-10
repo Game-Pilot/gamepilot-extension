@@ -41,11 +41,13 @@ function renderStatus(response) {
   environment.textContent = response?.environment?.label || "Ambiente desconhecido";
   environment.classList.toggle("local", response?.environment?.key === "local");
   if (!response?.ok) {
+    $("#settings").open = true;
     status.textContent = "API indisponível";
     status.classList.remove("connected");
     return;
   }
   if (response.status === "unpaired") {
+    $("#settings").open = true;
     status.textContent = "Extensão não vinculada";
     status.classList.remove("connected");
     $("#connection-details").classList.remove("visible");
@@ -115,6 +117,21 @@ function usageRows(selector, counts, names = {}) {
     row.append(label, value); root.append(row);
   }
 }
+function healthChart(o) {
+  const root = $("#observed-health-chart"); root.replaceChildren();
+  const total = o.healthObservedMs || 0;
+  $("#observed-health-count").textContent = total ? `${analyzerDuration(total)} com vida conhecida` : "Aguardando tempo observado com vida conhecida.";
+  for (let i = 10; i >= 0; i--) {
+    const count = o.healthTimeBucketsMs?.[i] || 0;
+    const percent = total ? count / total * 100 : 0;
+    const row = document.createElement("div"); row.className = `health-row ${i < 3 ? "low" : i < 6 ? "mid" : "high"}${count ? "" : " empty"}`;
+    const label = document.createElement("span"); label.textContent = i === 10 ? "100%" : `${i * 10}–<${(i + 1) * 10}%`;
+    const bar = document.createElement("meter"); bar.min = 0; bar.max = 100; bar.value = percent;
+    bar.title = `${label.textContent}: ${analyzerDuration(count)} de ${analyzerDuration(total)}`;
+    const value = document.createElement("span"); value.className = "health-value"; value.textContent = `${percent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% · ${analyzerDuration(count)}`;
+    row.append(label, bar, value); root.append(row);
+  }
+}
 function renderAnalyzer(response) {
   const o = response?.observedAnalyzer;
   const available = response?.ok && Boolean(o?.startedAt);
@@ -128,9 +145,13 @@ function renderAnalyzer(response) {
   const status = !response.connected ? "Desconectado · últimos dados" : age > 15000 ? "Sem eventos recentes" : "Captura ativa";
   $("#observed-status").textContent = `${status} · desde ${new Date(o.startedAt).toLocaleTimeString("pt-BR")}`;
   const n = analyzerNumber;
+  metricCards("#observed-records", [["Menor vida · HP", n(o.minimumHealth)], ["Menor vida · %", typeof o.minimumHealthPercent === "number" ? `${o.minimumHealthPercent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%` : "—"]]);
+  metricCards("#observed-max-hit", [["Maior dano em um acerto", n(o.maximumHit), true]]);
+  metricCards("#observed-attribution", [["Dano sem atribuição", n(o.unattributedDamage)]]);
+  healthChart(o);
   metricCards("#observed-metrics", [["Tempo capturado", analyzerDuration(o.durationMs)], ["Abates · parcial", n(o.kills)], ["Experiência", n(o.xpGained), true], ["XP por hora", n(o.xpPerHour), true]]);
   const dps = typeof o.damagePerSecond === "number" && Number.isFinite(o.damagePerSecond) ? o.damagePerSecond.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : "—";
-  metricCards("#observed-combat", [["Dano causado", n(o.damageDealt), true], ["Dano por segundo", dps, true], ["Dano recebido", n(o.damageReceived)], ["Acertos causados", n(o.outgoingHits)], ["Dano sem atribuição", n(o.unattributedDamage)]]);
+  metricCards("#observed-combat", [["Dano causado", n(o.damageDealt), true], ["Dano por segundo", dps, true], ["Dano recebido", n(o.damageReceived)], ["Acertos causados", n(o.outgoingHits)]]);
   metricCards("#observed-recovery", [["Vida recuperada", n(o.healthRestored)], ["Mana recuperada", n(o.manaRestored)], ["Roubo de vida", n(o.leechFieldObserved ? o.lifeLeech : null)], ["Roubo de mana", n(o.leechFieldObserved ? o.manaLeech : null)], ["Críticos causados", n(o.criticalFieldObserved ? o.outgoingCriticals : null)], ["Críticos recebidos", n(o.criticalFieldObserved ? o.incomingCriticals : null)], ["Seus ataques bloqueados", n(o.blockFieldObserved ? o.outgoingBlocks : null)], ["Ataques recebidos bloqueados", n(o.blockFieldObserved ? o.incomingBlocks : null)]]);
   usageRows("#observed-spells", o.spellCasts, {haste: "Haste", "divine-missile": "Divine Missile", "strong-ethereal-spear": "Strong Ethereal Spear"});
   usageRows("#observed-items", Object.fromEntries(Object.entries(o.itemUses || {}).map(([id, count]) => [`Item #${id}`, count])), {"Item #236": "Strong Health Potion", "Item #237": "Strong Mana Potion"});

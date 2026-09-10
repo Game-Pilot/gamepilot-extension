@@ -42,3 +42,15 @@ test('sidebar clears visibility for unavailable tabs and identifies disconnected
   assert.equal(api.elements.get('#observed-content').hidden,true);
   assert.equal(api.elements.get('#observed-status').textContent,'Selecione Huntera');
 });
+
+test('sidebar displays record zero and percentages for health duration buckets', () => {
+  const api = harness();
+  api.renderAnalyzer({ok:true,connected:true,observedAnalyzer:{startedAt:new Date().toISOString(),minimumHealth:0,minimumHealthPercent:0,maximumHit:500,healthObservedMs:4000,healthTimeBucketsMs:[1000,0,0,0,0,0,0,0,1000,0,2000]}});
+  assert.equal(api.elements.get('#observed-records').children[0].children[1].textContent,'0');
+  const rows = api.elements.get('#observed-health-chart').children;
+  assert.equal(rows.length,11);
+  assert.equal(rows[0].children[1].value,50);
+  assert.equal(rows[0].children[2].textContent,'50% · 00:00:02');
+  api.renderAnalyzer({ok:true,observedAnalyzer:{startedAt:new Date().toISOString()}});
+  assert.equal(api.elements.get('#observed-health-chart').children[0].children[1].value,0);
+});

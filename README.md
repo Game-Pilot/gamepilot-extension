@@ -43,3 +43,7 @@ Holyae, intervalo oficial 17:33:59.046–17:38:33.193 UTC: 74.410 XP, 8.344 dano
 A medição própria agora soma dano causado no evento 20 quando attackerId é o jogador e targetId é outro alvo. DPS usa todo o período observado, não apenas tempo atacando. Eventos 24 com id do jogador, kind spell e spellId contam usos por magia, inclusive magias de suporte. Não representam acertos nem dano por magia.
 
 Os eventos reais mostraram hits antes das notificações de magia e efeitos blood tanto em ataques comuns quanto em strong-ethereal-spear. Portanto todo dano causado permanece sem atribuição; não usamos proximidade temporal nem efeito visual para inventar uma associação. Não há total oficial de dano causado no frame 41 observado para comparação. Novos campos exigem carregar a extensão atualizada.
+
+## Recordes e tempo por faixa de vida
+
+A sidebar registra a menor vida em HP, a menor porcentagem de vida e o maior dano de um único acerto próprio. O gráfico mostra o tempo e sua porcentagem em dez faixas de 10%, com 100% separado. Integra a última vida válida até o próximo evento ao vivo durante a caçada/retorno; exclui intervalos inativos ou sem vida conhecida e não avança apenas por abrir o painel. Nova sessão/reconexão reinicia a medição. Fechar a sidebar preserva os dados na aba; recarregar a aba descarta a coleta local.

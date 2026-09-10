@@ -1,14 +1,17 @@
 // Passive counters: never infer loot/consumption from inventory movement.
 (function () {
   function create() {
-    let state, sequence, session, baseline, comparison, bestiary;
+    let state, sequence, session, baseline, comparison, bestiary, healthBucket, healthAt;
     function reset() {
       state = { source: 'websocket-observed', startedAt: null, observedAt: null, xpGained: 0,
         kills: 0, damageReceived: 0, damageDealt: 0, outgoingHits: 0, spellCasts: {}, itemUses: {}, projectiles: {},
         healthRestored: 0, manaRestored: 0, lifeLeech: 0, manaLeech: 0,
+        minimumHealth: null, minimumHealthPercent: null, maximumHit: null,
+        healthObservedMs: 0, healthTimeBucketsMs: Array(11).fill(0),
         outgoingCriticals: 0, incomingCriticals: 0, outgoingBlocks: 0, incomingBlocks: 0,
         criticalFieldObserved: false, blockFieldObserved: false, leechFieldObserved: false, killCoverage: 'partial' };
       sequence = 0; session = null; baseline = null; comparison = null; bestiary = {};
+      healthBucket = null; healthAt = null;
     }
     reset();
     const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -32,9 +35,30 @@
         }
       }
       // A snapshot has only the LAST event per type, not a complete event log.
-      if (replay || !active) return;
+      if (replay) return;
+      if (!active) { healthBucket = null; healthAt = null; return; }
       if (!state.startedAt) state.startedAt = message.receivedAt;
       state.observedAt = message.receivedAt;
+      // Integrate the last known health up to the latest live event, never wall
+      // time at read(): disconnected or silent tabs must not inflate duration.
+      const at = Date.parse(message.receivedAt);
+      if (Number.isFinite(at) && (healthAt === null || at >= healthAt)) {
+        if (healthBucket !== null && healthAt !== null) {
+          const elapsed = at - healthAt;
+          state.healthTimeBucketsMs[healthBucket] += elapsed;
+          state.healthObservedMs += elapsed;
+        }
+        healthAt = at;
+      } else return;
+      // Use authoritative own-player stats, never rounded creature percentages.
+      if (message.type === 'player-stats' && numeric(p.health) && numeric(p.maxHealth) && p.maxHealth > 0 && p.health <= p.maxHealth) {
+        const percent = p.health / p.maxHealth * 100;
+        state.minimumHealth = Math.min(state.minimumHealth ?? p.health, p.health);
+        state.minimumHealthPercent = Math.min(state.minimumHealthPercent ?? percent, percent);
+        healthBucket = p.health === p.maxHealth ? 10 : Math.min(9, Math.floor(percent / 10));
+      } else if (message.type === 'player-stats' && ('health' in p || 'maxHealth' in p)) {
+        healthBucket = null;
+      }
       // Diagnostic visual projectile count; never equate it to ammunition spent.
       if (message.code === 84 && playerId != null && p.attackerId === playerId &&
           typeof p.kind === 'string' && /^[a-z0-9-]{1,80}$/.test(p.kind) &&
@@ -46,6 +70,7 @@
       if (message.code === 20 && playerId != null && p.targetId === playerId && numeric(p.value)) state.damageReceived += p.value;
       if (message.code === 20 && playerId != null && p.attackerId === playerId && p.targetId != null && p.targetId !== playerId && numeric(p.value)) {
         state.damageDealt += p.value;
+        if (!p.blockType) state.maximumHit = Math.max(state.maximumHit ?? 0, p.value);
         if (!p.blockType) state.outgoingHits++;
       }
       if (message.code === 20 && playerId != null && (p.attackerId === playerId || p.targetId === playerId)) {
