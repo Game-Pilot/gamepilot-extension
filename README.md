@@ -28,6 +28,12 @@ Esta versão aponta para `https://gamepilot-api.iancosta.dev`. Depois de atualiz
 
 Para desenvolvimento local, altere a constante `API` no `service-worker.js` para `http://127.0.0.1:4317` e mantenha a permissão local no `manifest.json`.
 
+## Versionamento automático
+
+O workflow `Test and version extension` testa PRs e pushes na main. Quando arquivos da extensão mudam sem aumento de versão, ele incrementa o patch do manifest e envia um commit automático. Bumps manuais são preservados; regressões de versão falham. Alterações apenas em documentação, testes e ferramentas não exigem bump.
+
+Para fazer o bump antes do push, execute `node scripts/version.cjs --bump` na pasta da extensão e inclua o manifest no commit. O workflow precisa de Actions habilitado e permissão de escrita na main para o GITHUB_TOKEN. Falhas de testes ou proteção de branch interrompem o processo e aparecem no Actions. O commit do bot não dispara outros workflows de push; uma futura publicação via Actions deve acontecer neste mesmo workflow, após o versionamento.
+
 ## Medição própria experimental
 
 A sidebar também exibe `observedAnalyzer`, enviado no heartbeat separadamente de `metrics`. Conta eventos ao vivo de XP (30, filtrado por playerId), dano recebido (20, filtrado por targetId) e diferenças positivas do bestiário (9). Abates são parciais: uma criatura sem baseline ou uma mudança de etapa não é extrapolada. Efeitos visuais do dano não são interpretados como canais oficiais. Inventário não é convertido em loot/consumo por não distinguir transferências e vendas.
