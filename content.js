@@ -241,6 +241,11 @@ async function handleCommand(command, commandId, payload = {}) {
         await sendEvent({ type: "training.started", message: result.alreadyTraining ? "Treino online já estava ativo" : "Treino online iniciado", details: { payload, skill: result.skill, mode: "online" } });
       }
     } else if ((command === "start" || command === "start-hunt") && payload.operation === "group-hunt") {
+      if (payload.group?.cycle) {
+        if (automationPayload.group?.id !== payload.group.id || automationPayload.group?.startCommandId !== payload.group.sourceStartCommandId || mode !== 'resupply-ready') throw new Error('A operação mudou antes da retomada do grupo');
+        payload = { ...payload, actions: automationActions, hunt: automationConfig, loot: automationPayload.loot || payload.loot };
+      }
+      payload = { ...payload, group: { ...payload.group, startCommandId: commandId } };
       const nextActions = Array.isArray(payload.actions) ? payload.actions : [];
       automationConfig = payload.hunt || {}; automationPayload = payload; mode = "starting"; showBanner(payload.group?.role === "leader" ? "iniciando caçada com o time" : "aguardando convite da caçada em grupo");
       lastReturnAt = 0;
@@ -294,6 +299,29 @@ async function handleCommand(command, commandId, payload = {}) {
         mode = "idle";
         await sendEvent({ type: "training.stopped", message: result.alreadyStopped ? "Treino já estava parado" : "Treino online encerrado", details: { payload } });
       }
+    } else if (command === "group-resupply") {
+      if (payload.operation !== 'group-hunt' || payload.group?.id !== automationPayload.group?.id) throw new Error('O grupo desta operação mudou');
+      if (payload.group?.sourceStartCommandId !== automationPayload.group?.startCommandId) throw new Error('O ciclo desta operação mudou');
+      if (adapter?.readState?.().character?.name !== payload.characterName) throw new Error('Comando não corresponde ao personagem conectado');
+      automationEnabled = false;
+      mode = 'returning';
+      showBanner('retornando com o grupo para vender');
+      const returned = await adapter?.leaveHunt?.();
+      if (!returned?.ok) throw new Error(returned?.error || 'Não foi possível retornar com o grupo');
+      await sendEvent({ type: 'hunt.returned', message: 'Grupo retornou para vender', details: { automatic: true, group: payload.group } });
+      if (interrupting) throw new Error('Retorno do grupo cancelado');
+      mode = 'selling';
+      const opened = await adapter?.openStore?.({ autoLeave: false });
+      if (!opened?.ok) throw new Error(opened?.error || 'Não foi possível abrir a loja');
+      if (interrupting) throw new Error('Venda do grupo cancelada');
+      result = await sellAndCloseStore(adapter, automationPayload.loot || payload.loot || {});
+      if (!result.ok) throw new Error(result.error || 'Não foi possível vender o loot');
+      await sendEvent({ type: 'items.sold', message: result.message || 'Venda do grupo concluída', details: { ...result, automatic: true } });
+      if (interrupting) throw new Error('Retomada do grupo cancelada');
+      mode = 'resupply-ready';
+      persistAutomationState();
+      showBanner('venda concluída; aguardando os demais participantes');
+      await sendEvent({ type: 'group.member-returned', message: 'Personagem pronto para retomar com o grupo', details: { group: payload.group } });
     } else if (command === "stop" || command === "return-town") {
       if (adapter?.readState?.().training?.active) {
         const stopped = await adapter.stopTraining();
@@ -497,7 +525,16 @@ function scheduleArrowSwitchCycle() {
 
 async function runAutomationCycle(gameState) {
   if (!validateAutomationCharacter(gameState)) return;
-  if (!automationEnabled || automationBusy || commandBusy || !gameState?.inHunt || !thresholdReached(gameState)) return;
+  if (!automationEnabled || automationBusy || commandBusy || !thresholdReached(gameState)) return;
+  if (automationPayload?.operation === 'group-hunt') {
+    if (!gameState?.inHunt && !gameState?.inTown) return;
+    mode = 'resupply-requested';
+    automationEnabled = false;
+    persistAutomationState();
+    showBanner('mochila no limite; aguardando retorno coordenado do grupo');
+    return;
+  }
+  if (!gameState?.inHunt) return;
   automationBusy = true;
   lastReturnAt = Date.now();
   const adapter = globalThis.GamePilotAdapters?.huntera;
@@ -513,12 +550,6 @@ async function runAutomationCycle(gameState) {
     if (!sold?.ok) throw new Error(sold?.error || "Não foi possível vender os itens");
     await sendEvent({ type: "items.sold", message: sold.message || `Ciclo vendeu ${sold.sold || 0} ação(ões)`, details: { ...sold, automatic: true } });
     if (!automationEnabled) return;
-    if (automationPayload?.operation === "group-hunt") {
-      automationEnabled = false;
-      mode = "idle";
-      await sendEvent({ type: "group.member-returned", message: "Personagem voltou e vendeu; aguardando o grupo antes de retomar", details: { automatic: true, group: automationPayload.group || null } });
-      return;
-    }
     mode = "starting";
     const configured = await adapter?.configureActions?.(automationActions) || { ok: true, configured: 0 };
     if (!configured.ok) throw new Error(configured.error || "Não foi possível reaplicar as ações do personagem");
@@ -566,7 +597,7 @@ function operationReport(gameState) {
   const bestiary = automationPayload?.bestiary?.enabled ? automationPayload.bestiary : null;
   const group = automationPayload?.operation === "group-hunt" ? automationPayload.group || {} : null;
   const training = gameState?.training?.active || automationPayload?.operation === "training";
-  const activeMode = gameState?.shopOpen ? "selling"
+  const activeMode = ['resupply-requested', 'resupply-ready'].includes(mode) ? mode : gameState?.shopOpen ? "selling"
     : gameState?.training?.active ? "training"
       : mode === "reconnecting" ? "reconnecting"
         : mode === "returning" ? "returning"
@@ -590,7 +621,7 @@ function operationReport(gameState) {
       ...bestiary,
       ...(sameBestiaryTarget && liveBestiary?.killCount != null ? { killCount: liveBestiary.killCount } : {})
     } : null,
-    group: group ? { id: group.id || null, name: group.name || null, role: group.role || null } : null
+    group: group ? { id: group.id || null, name: group.name || null, role: group.role || null, startCommandId: group.startCommandId || null } : null
   };
 }
 
@@ -632,7 +663,7 @@ function sendState() {
   // Transient command modes must not outlive the UI state they describe. This
   // clears a stale `selling` after the shop closes (or after a reload), which
   // previously hid a real training-update behind a false "Vendendo" status.
-  if (!commandBusy && !automationBusy) {
+  if (!commandBusy && !automationBusy && !['resupply-requested', 'resupply-ready'].includes(mode)) {
     if (gameState.shopOpen) mode = "selling";
     else if (gameState.inHunt) mode = "hunting";
     else if (gameState.training?.active) mode = "training";
