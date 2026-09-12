@@ -22,6 +22,50 @@ const pendingSocketMessages = new Map();
 const connectionTabs = new Map();
 const pushedCommandIds = new Map();
 
+const PAGE_WATCH_KEY = "gamepilot.pageWatch";
+const PAGE_WATCH_ALARM = "gamepilot-page-watch";
+let pageWatchQueue = Promise.resolve();
+
+// Serialize session storage updates so concurrent tabs cannot erase each other.
+function updatePageWatch(action) {
+  pageWatchQueue = pageWatchQueue.then(async () => {
+    const stored = await chrome.storage.session.get(PAGE_WATCH_KEY);
+    const pages = stored[PAGE_WATCH_KEY] || {};
+    await action(pages);
+    await chrome.storage.session.set({ [PAGE_WATCH_KEY]: pages });
+  }).catch((error) => console.warn("Falha no monitor da aba", error));
+  return pageWatchQueue;
+}
+
+async function recoverSilentPages(pages) {
+  const now = Date.now();
+  for (const [id, page] of Object.entries(pages)) {
+    if (now - page.lastSeen < 30000 || now - (page.lastFocus || 0) < 120000) continue;
+    let tab;
+    try { tab = await chrome.tabs.get(Number(id)); }
+    catch { delete pages[id]; continue; }
+    if (!tab.url?.startsWith("https://huntera.com.br/")) { delete pages[id]; continue; }
+    page.lastFocus = now;
+    try {
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch (error) { console.warn("Não foi possível focar a aba do jogo", error); }
+    // Recover one window per check, avoiding a focus race between silent tabs.
+    break;
+  }
+}
+
+if (chrome.alarms) {
+  // One minute also supports the manifest's minimum Chrome version (116).
+  chrome.alarms.create(PAGE_WATCH_ALARM, { periodInMinutes: 1 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === PAGE_WATCH_ALARM) void updatePageWatch(recoverSilentPages);
+  });
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    void updatePageWatch((pages) => { delete pages[tabId]; });
+  });
+}
+
 function environmentView() {
   const hostname = new URL(API).hostname;
   const local = hostname === "127.0.0.1" || hostname === "localhost";
@@ -280,6 +324,26 @@ async function pairedDeviceStatus() {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "focus-game-for-return") {
+    if (!Number.isInteger(sender.tab?.id) || !sender.url?.startsWith("https://huntera.com.br/")) return;
+    (async () => {
+      const tab = await chrome.tabs.get(sender.tab.id);
+      if (!tab.url?.startsWith("https://huntera.com.br/")) throw new Error("A aba saiu do Huntera");
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      sendResponse({ ok: true });
+    })().catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === "page-alive") {
+    if (!Number.isInteger(sender.tab?.id) || !sender.url?.startsWith("https://huntera.com.br/")) return;
+    void updatePageWatch((pages) => {
+      const previous = pages[sender.tab.id];
+      pages[sender.tab.id] = { lastSeen: Date.now(), lastFocus: previous?.lastFocus || 0 };
+    });
+    sendResponse({ ok: true });
+    return;
+  }
   if (message.type === "pair-device") {
     (async () => {
       const data = await pairDevice(message.code);

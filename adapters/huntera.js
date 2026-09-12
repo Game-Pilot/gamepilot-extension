@@ -1,5 +1,6 @@
 (function registerHunteraAdapter() {
   const observedAnalyzer = globalThis.GamePilotObservedAnalyzer?.create();
+  const economyObservation = globalThis.GamePilotEconomyObservation?.create();
   const IMBUEMENT_MATERIALS = {
     void: [{ name: "Rope Belt", marketName: "rope belt", quantity: 25 }, { name: "Silencer Claws", marketName: "silencer claws", quantity: 25 }, { name: "Grimeleech Wings", marketName: "some grimeleech wings", quantity: 5 }],
     vampirism: [{ name: "Vampire Teeth", marketName: "vampire teeth", quantity: 25 }, { name: "Bloody Pincers", marketName: "bloody pincers", quantity: 15 }, { name: "Piece of Dead Brain", marketName: "piece of dead brain", quantity: 5 }],
@@ -183,6 +184,8 @@
     if (observationCurrent) observedAnalyzer?.accept(message, socketState.playerId, replay,
       socketState.playerStats?.staminaDraining === true || socketState.phase === "hunting" || socketState.phase === "returning");
     if (observationCurrent) recordCombatEvent(message);
+    if (observationCurrent) economyObservation?.accept(message, socketState.playerId, replay,
+      socketState.playerStats?.staminaDraining === true || socketState.phase === "hunting" || socketState.phase === "returning");
     if (observationCurrent) socketState.messageShapes[message.type] = {
       code: message.code ?? null,
       receivedAt: socketState.lastMessageAt,
@@ -367,7 +370,7 @@
           at: socketState.lastMessageAt
         };
         break;
-      case "item-values": socketState.itemValues = payload; break;
+      case "item-values": socketState.itemValues = { ...socketState.itemValues, ...payload }; break;
       case "market-items": socketState.marketItems = payload; break;
       default: break;
     }
@@ -381,6 +384,8 @@
       socketState.observationOpenedAt = snapshot.openedAt;
       socketState.imbuementMaterialIds = null;
       observedAnalyzer?.reset();
+      economyObservation?.reset();
+      socketState.itemValues = null;
       socketState.analyzer = null;
       socketState.analyzerFrames = {};
       socketState.combatFrames = {};
@@ -528,6 +533,7 @@
       playerId: socketState.playerId,
       frames,
       combatFrames: JSON.parse(JSON.stringify(socketState.combatFrames)),
+      economy: economyObservation?.read() || null,
       combatTimeline: { schemaVersion: 1, clock: "client-receive", dropped: socketState.combatEventsDropped, events: JSON.parse(JSON.stringify(socketState.combatEvents)) },
       messageShapes: JSON.parse(JSON.stringify(socketState.messageShapes))
     };
@@ -581,6 +587,8 @@
       if (socketState.connected) {
         socketState.observationOpenedAt = event.data.at || new Date().toISOString();
         observedAnalyzer?.reset();
+        economyObservation?.reset();
+        socketState.itemValues = null;
         socketState.analyzer = null;
         socketState.analyzerFrames = {};
         socketState.combatFrames = {};
@@ -1530,7 +1538,7 @@
       const baseKey = itemKeyFromName(name);
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
       const policy = configuredLootPolicy(accountLoot, { itemId, name });
-      const desired = accountConfigured ? policy !== "ignore" : configured ? (keys.has(baseKey) || keys.has(variantKey)) : true;
+      const desired = accountConfigured ? policy !== "ignore" && (policy !== "default" || collectDefaultLoot(itemId)) : configured ? (keys.has(baseKey) || keys.has(variantKey)) : collectDefaultLoot(itemId);
       expected.push({ identity: lootControlIdentity(control), desired, name: name || String(itemId) || "item desconhecido" });
       if (control.checked !== desired && setLootControlChecked(control, desired)) changed += 1;
     }
@@ -2207,6 +2215,15 @@
 
   async function leaveHunt() {
     if (inTown()) return { ok: true, alreadyOut: true };
+    // The game may keep sending telemetry while its loading animation is paused
+    // in the background. Focus before leaving instead of waiting for silence.
+    try {
+      const focused = await chrome.runtime.sendMessage({ type: "focus-game-for-return" });
+      if (!focused?.ok) return { ok: false, error: focused?.error || "Não foi possível focar o jogo para retornar à cidade" };
+    } catch (error) {
+      return { ok: false, error: error.message || "Não foi possível focar o jogo para retornar à cidade" };
+    }
+    if (inTown()) return { ok: true, alreadyOut: true };
     const button = document.querySelector("#nav-leave-hunt"); if (!button) return { ok: false, error: "Botão para sair da caçada não encontrado" };
     button.click();
     const returned = await waitUntil(() => inTown(), 20000, 100);
@@ -2285,6 +2302,33 @@
     return ["warehouse", "npc", "default", "ignore"].includes(entry?.policy) ? entry.policy : "default";
   }
 
+  function bossLootItem(itemId) {
+    const messages = socketState.messages;
+    const drops = [
+      ...(messages["daily-boss-status"]?.bosses || []).flatMap(boss => boss.loot || []),
+      ...(messages["daily-boss-victory"]?.table || []),
+      ...(messages["daily-boss-victory"]?.reward || []),
+      ...(messages["daily-boss-rewards"]?.entries || []).map(entry => entry.item || entry)
+    ];
+    return drops.some(item => String(item.itemId) === String(itemId));
+  }
+
+  // Huntera weights are hundredths of an ounce; prices are per item.
+  const MIN_DEFAULT_LOOT_GP_PER_OZ = 10;
+  function collectDefaultLoot(itemId) {
+    if (bossLootItem(itemId) || !socketState.imbuementMaterialIds || socketState.imbuementMaterialIds.has(String(itemId))) return true;
+    const items = (socketState.messages["hunt-catalog"]?.hunts || []).flatMap(hunt => hunt.loot || []);
+    const item = items.find(candidate => String(candidate.itemId) === String(itemId));
+    const weight = Number(item?.weight);
+    if (!Number.isFinite(weight) || weight <= 0) return true;
+    const priceFrom = entries => {
+      const value = (Array.isArray(entries) ? entries : []).find(entry => String(entry[0]) === String(itemId))?.[1];
+      return value != null && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+    };
+    const value = priceFrom(socketState.itemValues?.auction) ?? priceFrom(socketState.itemValues?.npc);
+    return value === null || value / (weight / 100) >= MIN_DEFAULT_LOOT_GP_PER_OZ;
+  }
+
   function lootDisposition(item, quote = {}, policy = "default") {
     // "Ignore" is a collection policy. If an ignored item is already in the
     // backpack (for example, from before the policy changed), clear that
@@ -2292,6 +2336,7 @@
     if (policy === "ignore") return { destination: "npc", reason: "política da conta: não coletar; vender saldo existente no NPC", sellPrice: null };
     if (policy === "warehouse") return { destination: "warehouse", reason: "política da conta: sempre guardar", sellPrice: null };
     if (policy === "npc") return { destination: "npc", reason: "política da conta: sempre vender no NPC", sellPrice: null };
+    if (bossLootItem(item.itemId)) return { destination: "warehouse", reason: "item de chefe: sempre depositar no modo padrão", sellPrice: null };
     if (!socketState.imbuementMaterialIds) return { destination: "pending", reason: "aguardando catálogo de materiais de imbuement", sellPrice: null };
     if (socketState.imbuementMaterialIds.has(String(item.itemId))) return { destination: "warehouse", reason: "material de imbuement: sempre depositar no modo padrão", sellPrice: null };
     const sellPrices = Array.isArray(quote.sellPrices) ? quote.sellPrices.filter((value) => Number.isFinite(Number(value))).map(Number) : [];

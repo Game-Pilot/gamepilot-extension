@@ -2,6 +2,10 @@
 
 Extensão Manifest V3 do MVP. Ela conecta uma aba do Huntera ao GamePilot, envia heartbeat/telemetria à API e recebe comandos do painel.
 
+Antes de retornar à cidade, a extensão ativa a aba do personagem e traz sua janela para frente, inclusive nos retornos automáticos. Isso permite que o loading avance mesmo quando a aba estava em segundo plano e ainda enviava telemetria. Se o Chrome recusar o foco, o retorno informa o erro antes de clicar para sair.
+
+O service worker verifica a cada minuto o sinal local das abas do jogo. Após pelo menos 30 segundos sem sinal, ativa a aba e traz sua janela do Chrome para frente para tentar retomar o jogo suspenso em segundo plano. Cada aba tem um intervalo mínimo de dois minutos entre tentativas; abas fechadas ou que saíram do Huntera são removidas do monitor. O sinal local independe da conexão com a API e o monitor é preservado na sessão quando o worker adormece.
+
 A conexão principal usa um único WebSocket autenticado no service worker para todas as abas Huntera. O canal envia keepalive a cada 20 segundos, reconecta com backoff e jitter e exige confirmação identificada de cada mensagem. Heartbeats são idempotentes e comandos usam entrega pelo menos uma vez com deduplicação por `commandId` na aba. Se a rede ou um proxy bloquear WebSockets, estado e comandos continuam pelo transporte HTTP de recuperação.
 
 O adaptador Huntera detecta personagem, vocação, level, vida, mana, experiência, stamina, gold, capacidade, métricas do analisador e estado da caçada. Os comandos do MVP são iniciar, parar/retornar, abrir loja e destinar o loot conforme a política compartilhada pela conta: ignorar a coleta, guardar no armazém, vender no NPC ou comparar automaticamente com o leilão.

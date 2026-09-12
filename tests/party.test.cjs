@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, collectDefaultLoot, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -795,4 +795,41 @@ test("initialization stops training before any party actions; follower accepts I
   assert.equal((await api.prepareGroup({ group })).ok, true);
   assert.equal(card.buttons[0].clicks, 1);
   assert.deepEqual(actions, ["stop-training", "members-confirmed", "target", "costs"]);
+});
+
+
+test("default collection uses market first, NPC fallback and gp per ounce", () => {
+  const api = adapter();
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
+  api.applySocketMessage({ type: "hunt-catalog", payload: { hunts: [{ loot: [{ itemId: 10, weight: 1000 }] }] } });
+  const check = (auction, npc, expected) => {
+    api.applySocketMessage({ type: "item-values", payload: { auction, npc } });
+    assert.equal(api.collectDefaultLoot("10"), expected);
+  };
+  check([[10, 99]], [[10, 1000]], false);
+  check([[10, 100]], [[10, 1]], true);
+  check([], [[10, 99]], false);
+  check([], [[10, 100]], true);
+  check([], [], true);
+  check([[10, 0]], [[10, 1000]], false);
+  assert.equal(api.collectDefaultLoot("unknown"), true);
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [10] } });
+  assert.equal(api.collectDefaultLoot("10"), true);
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
+  api.applySocketMessage({ type: "daily-boss-status", payload: { bosses: [{ loot: [{ itemId: 10 }] }] } });
+  assert.equal(api.collectDefaultLoot("10"), true);
+  assert.equal(api.lootDisposition({ itemId: "10", npcValue: 100 }).destination, "warehouse");
+});
+
+test("default collection filter updates actual auto-loot controls and honors explicit policies", async () => {
+  const entry = { hidden: false, dataset: {}, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Heavy item" }) };
+  const control = { disabled: false, checked: true, dataset: { itemId: "10" }, closest: () => entry, click() { this.checked = !this.checked; } };
+  const api = adapter([], [control]);
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
+  api.applySocketMessage({ type: "hunt-catalog", payload: { hunts: [{ loot: [{ itemId: 10, weight: 10000 }] }] } });
+  api.applySocketMessage({ type: "item-values", payload: { auction: [[10, 10]], npc: [] } });
+  assert.equal((await api.configureLoot({}, { version: 1, items: [] })).ok, true);
+  assert.equal(control.checked, false);
+  await api.configureLoot({}, { version: 1, items: [{ externalItemId: "10", policy: "warehouse" }] });
+  assert.equal(control.checked, true);
 });

@@ -739,6 +739,8 @@ function acceptAgentCommand(response) {
 
 function sendState() {
   if (!runtimeMessagingAvailable) return;
+  // Local liveness must continue even while an API request is pending.
+  sendRuntimeMessage({ type: "page-alive" });
   lastStatePostAt = Date.now();
   persistAutomationState();
   const adapter = globalThis.GamePilotAdapters?.huntera;

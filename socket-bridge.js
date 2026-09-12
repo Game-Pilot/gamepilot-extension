@@ -52,6 +52,9 @@
     126: "hunt-sell-rules",
     132: "alerts-state",
     142: "imbuement-materials",
+    143: "daily-boss-status",
+    149: "daily-boss-victory",
+    151: "daily-boss-rewards",
     155: "creature-resync"
   });
 
