@@ -86,6 +86,8 @@
     coins: null,
     huntPending: null,
     huntLeavePending: null,
+    huntQuickSell: null,
+    quickSellItemIds: null,
     actionBar: null,
     autoLootDisabledItemIds: null,
     imbuementMaterialIds: null,
@@ -284,6 +286,19 @@
       case "coins": socketState.coins = firstNumber(payload.balance); break;
       case "hunt-pending": socketState.huntPending = payload; socketState.phase = "starting"; break;
       case "hunt-leave-pending": socketState.huntLeavePending = payload; socketState.phase = payload.remainingMs === null ? "idle" : "returning"; break;
+      case "hunt-quick-sell-state":
+        socketState.huntQuickSell = {
+          ...payload,
+          receivedAt: socketState.lastMessageAt,
+          endsAt: (timestampMs(socketState.lastMessageAt) ?? Date.now()) + Math.max(0, firstNumber(payload.remainingMs) ?? 0)
+        };
+        break;
+      case "quick-sell-update":
+        socketState.quickSellItemIds = Array.isArray(payload.itemIds) ? payload.itemIds.slice() : null;
+        break;
+      case "shop-offers":
+        if (Array.isArray(payload.quickSellItemIds)) socketState.quickSellItemIds = payload.quickSellItemIds.slice();
+        break;
       case "instance-enter": socketState.phase = "hunting"; socketState.creatures.clear(); socketState.creaturesReceived = false; break;
       case "player-died": socketState.phase = "idle"; socketState.creatures.clear(); socketState.creaturesReceived = false; break;
       case "action-bar-update": socketState.actionBar = payload; break;
@@ -383,6 +398,8 @@
     if (snapshot.openedAt && snapshot.openedAt !== socketState.observationOpenedAt) {
       socketState.observationOpenedAt = snapshot.openedAt;
       socketState.imbuementMaterialIds = null;
+      socketState.huntQuickSell = null;
+      socketState.quickSellItemIds = null;
       observedAnalyzer?.reset();
       economyObservation?.reset();
       socketState.itemValues = null;
@@ -439,6 +456,46 @@
     return confirmed && firstNumber(socketState.ammoSelection?.[kind]) === desired
       ? { ok: true, itemId: desired }
       : { ok: false, error: "O Huntera não confirmou a troca de munição" };
+  }
+
+  function selectedHuntQuickSellItems() {
+    const configured = socketState.quickSellItemIds;
+    if (!socketState.inventory || !Array.isArray(configured)) return [];
+    const selected = new Set(configured.map(Number).filter((itemId) => Number.isInteger(itemId) && itemId > 0));
+    return socketState.inventory.slots.filter((item) => item && selected.has(Number(item.itemId))
+      && !item.sellLocked && !item.bound && !item.imbuements);
+  }
+
+  function inventoryRevision() {
+    const inventory = socketState.inventory;
+    if (!inventory) return null;
+    return JSON.stringify({
+      gold: inventory.gold,
+      slots: inventory.slots.map((item) => item ? [item.uid, item.itemId, item.count] : null)
+    });
+  }
+
+  async function dispatchHuntLoot() {
+    if (!socketFresh() || socketInHunt() !== true) return { ok: true, dispatched: false, reason: "not-in-hunt" };
+    const items = selectedHuntQuickSellItems();
+    if (!items.length) return { ok: true, dispatched: false, reason: "no-selected-items" };
+    if (Number(socketState.huntQuickSell?.endsAt) > Date.now()) {
+      return { ok: true, dispatched: false, reason: "cooldown", remainingMs: socketState.huntQuickSell.endsAt - Date.now() };
+    }
+    const beforeInventory = inventoryRevision();
+    const sent = await sendHunteraSocketCommand("hunt-quick-sell");
+    if (!sent.ok) return { ...sent, dispatched: false };
+    // The cooldown frame only confirms that the request was received. Wait for
+    // the authoritative inventory/gold delta before deciding whether returning
+    // to town is still necessary.
+    const confirmed = await waitUntil(() => inventoryRevision() !== beforeInventory, 5000, 100);
+    if (!confirmed) return { ok: false, dispatched: false, error: "O Huntera não confirmou o despacho do loot" };
+    return {
+      ok: true,
+      dispatched: true,
+      itemCount: items.reduce((total, item) => total + Math.max(1, Number(item.count) || 1), 0),
+      backpack: socketBackpack()
+    };
   }
 
   function socketBackpack() {
@@ -3037,5 +3094,5 @@
   }
 
   globalThis.GamePilotAdapters = globalThis.GamePilotAdapters || {};
-  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, combatBarExperiment, readCombatBarJournal, configureAccountLoot, selectAmmo, leaveHunt, openStore, sellItems, quoteImbuementPlan, applyImbuementPlan: executeImbuementPlan, closeStore, selectCharacter, syncBestiary, closeBestiary };
+  globalThis.GamePilotAdapters.huntera = { key: "huntera", cancelPending, readState, readPartyState, prepareGroup, startHunt, startGroupHunt, acceptGroupHunt, startTraining, stopTraining, configureActions, combatBarExperiment, readCombatBarJournal, configureAccountLoot, selectAmmo, dispatchHuntLoot, leaveHunt, openStore, sellItems, quoteImbuementPlan, applyImbuementPlan: executeImbuementPlan, closeStore, selectCharacter, syncBestiary, closeBestiary };
 })();

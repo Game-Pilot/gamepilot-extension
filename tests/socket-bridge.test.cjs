@@ -80,6 +80,15 @@ test("does not bypass Huntera's own auto-loot state handler", () => {
   assert.equal(harness.posts.at(-1).ok, false);
 });
 
+test("sends Huntera hunt quick-sell opcode 34 through the observed socket", () => {
+  const harness = bridge();
+  const socket = new harness.window.WebSocket("wss://huntera.com.br/game-socket");
+  socket.emit("open");
+  harness.windowListeners.get("message")({ source: harness.window, data: { source: "gamepilot-huntera-content", type: "socket-command", requestId: "dispatch", command: "hunt-quick-sell", payload: {} } });
+  assert.deepEqual(decode(socket.sent[0]), [34, {}]);
+  assert.equal(harness.posts.at(-1).ok, true);
+});
+
 test("keeps an authoritative creature roster in socket snapshots", async () => {
   const harness = bridge();
   const socket = new harness.window.WebSocket("wss://huntera.com.br/game-socket");

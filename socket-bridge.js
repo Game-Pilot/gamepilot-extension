@@ -58,7 +58,7 @@
     155: "creature-resync"
   });
 
-  const COMMAND_TYPES = Object.freeze({ "market-accept": 44, "market-browse": 45, "market-close": 47, "market-open": 51, "select-ammo": 77 });
+  const COMMAND_TYPES = Object.freeze({ "hunt-quick-sell": 34, "market-accept": 44, "market-browse": 45, "market-close": 47, "market-open": 51, "select-ammo": 77 });
 
   const activeSockets = new Set();
   const latest = {
@@ -280,7 +280,7 @@
       const offerId = String(event.data.payload?.offerId || "");
       const amount = Number(event.data.payload?.amount);
       const socket = [...activeSockets].find((candidate) => candidate.readyState === WebSocket.OPEN);
-      const payload = ["market-open", "market-close"].includes(command)
+      const payload = ["hunt-quick-sell", "market-open", "market-close"].includes(command)
         ? {}
         : command === "market-accept" && offerId.length > 0 && offerId.length <= 128 && Number.isInteger(amount) && amount > 0 && amount <= 10000
           ? { offerId, amount }

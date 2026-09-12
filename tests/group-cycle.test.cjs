@@ -29,6 +29,27 @@ test('full bag requests coordination even if Huntera already returned to town', 
     assert.equal(h.c.operationReport({ inHunt }).phase, 'resupply-requested');
   }
 });
+test('dispatches hunt loot before requesting a coordinated return', async () => {
+  const h = harness();
+  h.state.inHunt = true; h.state.inTown = false;
+  h.c.GamePilotAdapters.huntera.dispatchHuntLoot = async () => { h.calls.push('dispatch'); return { ok: true, dispatched: true, itemCount: 3 }; };
+  h.c.GamePilotAdapters.huntera.readState = () => ({ ...h.state, backpack: { percent: 40 } });
+  h.c.thresholdReached = state => Number(state?.backpack?.percent) >= 85;
+  await h.c.runAutomationCycle({ ...h.state, backpack: { percent: 90 } });
+  assert.deepEqual(h.calls, ['dispatch']);
+  assert.equal(h.c.mode, 'hunting');
+  assert.equal(h.c.automationEnabled, true);
+  assert.ok(h.events.some(e => e.type === 'items.dispatched'));
+});
+test('falls back to the coordinated return when hunt loot dispatch fails', async () => {
+  const h = harness();
+  h.state.inHunt = true; h.state.inTown = false;
+  h.c.GamePilotAdapters.huntera.dispatchHuntLoot = async () => { h.calls.push('dispatch'); throw new Error('dispatch failed'); };
+  await h.c.runAutomationCycle({ ...h.state, backpack: { percent: 90 } });
+  assert.deepEqual(h.calls, ['dispatch', 'persist']);
+  assert.equal(h.c.mode, 'resupply-requested');
+  assert.ok(h.events.some(e => e.type === 'items.dispatch-failed'));
+});
 test('coordinated command returns, sells and preserves the original hunt identity while waiting', async () => {
   const h = harness(); await h.c.handleCommand('group-resupply', 'sell', { operation: 'group-hunt', characterName: 'Leader', group: { id: 'g', sourceStartCommandId: 'start' } });
   assert.deepEqual(h.calls, ['leave', 'shop', 'sell', 'persist']);

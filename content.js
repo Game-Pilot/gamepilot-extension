@@ -532,6 +532,39 @@ function scheduleArrowSwitchCycle() {
 async function runAutomationCycle(gameState) {
   if (!validateAutomationCharacter(gameState)) return;
   if (!automationEnabled || automationBusy || commandBusy || !thresholdReached(gameState)) return;
+  const adapter = globalThis.GamePilotAdapters?.huntera;
+  if (gameState?.inHunt && adapter?.dispatchHuntLoot) {
+    automationBusy = true;
+    showBanner("mochila no limite; tentando despachar o loot da hunt");
+    try {
+      const dispatched = await adapter.dispatchHuntLoot(automationPayload?.loot || {});
+      if (dispatched?.ok && dispatched.dispatched) {
+        const afterDispatch = adapter.readState?.() || gameState;
+        const afterPercent = Number(afterDispatch?.backpack?.percent);
+        const returnPercent = Number(automationConfig.backpackReturnPercent || 85);
+        await sendEvent({
+          type: "items.dispatched",
+          message: `Loot despachado durante a hunt${dispatched.itemCount ? ` (${dispatched.itemCount} item(ns))` : ""}`,
+          details: { ...dispatched, automatic: true, reason: "threshold", gameState: afterDispatch }
+        });
+        if (Number.isFinite(afterPercent) && afterPercent < returnPercent) {
+          lastReturnAt = 0;
+          mode = "hunting";
+          showBanner("loot despachado; caçada mantida");
+          return;
+        }
+        gameState = afterDispatch;
+      }
+    } catch (error) {
+      await sendEvent({
+        type: "items.dispatch-failed",
+        message: `${error.message || "Não foi possível despachar o loot"}; seguindo com o retorno`,
+        details: { automatic: true, reason: "threshold" }
+      });
+    } finally {
+      automationBusy = false;
+    }
+  }
   if (automationPayload?.operation === 'group-hunt') {
     if (!gameState?.inHunt && !gameState?.inTown) return;
     mode = 'resupply-requested';
@@ -543,7 +576,6 @@ async function runAutomationCycle(gameState) {
   if (!gameState?.inHunt) return;
   automationBusy = true;
   lastReturnAt = Date.now();
-  const adapter = globalThis.GamePilotAdapters?.huntera;
   try {
     mode = "returning"; showBanner("limite atingido; retornando");
     const returned = await adapter?.leaveHunt?.();
