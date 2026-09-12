@@ -2325,7 +2325,8 @@
       const value = (Array.isArray(entries) ? entries : []).find(entry => String(entry[0]) === String(itemId))?.[1];
       return value != null && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
     };
-    const value = priceFrom(socketState.itemValues?.auction) ?? priceFrom(socketState.itemValues?.npc);
+    const prices = [priceFrom(socketState.itemValues?.auction), priceFrom(socketState.itemValues?.npc)].filter(price => price !== null);
+    const value = prices.length ? Math.max(...prices) : null;
     return value === null || value / (weight / 100) >= MIN_DEFAULT_LOOT_GP_PER_OZ;
   }
 

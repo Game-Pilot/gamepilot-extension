@@ -798,7 +798,7 @@ test("initialization stops training before any party actions; follower accepts I
 });
 
 
-test("default collection uses market first, NPC fallback and gp per ounce", () => {
+test("default collection uses the higher market or NPC price and gp per ounce", () => {
   const api = adapter();
   api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
   api.applySocketMessage({ type: "hunt-catalog", payload: { hunts: [{ loot: [{ itemId: 10, weight: 1000 }] }] } });
@@ -806,12 +806,17 @@ test("default collection uses market first, NPC fallback and gp per ounce", () =
     api.applySocketMessage({ type: "item-values", payload: { auction, npc } });
     assert.equal(api.collectDefaultLoot("10"), expected);
   };
-  check([[10, 39]], [[10, 1000]], false);
+  check([[10, 39]], [[10, 1000]], true);
+  check([[10, 39]], [[10, 39]], false);
   check([[10, 40]], [[10, 1]], true);
   check([], [[10, 39]], false);
   check([], [[10, 40]], true);
   check([], [], true);
-  check([[10, 0]], [[10, 1000]], false);
+  check([[10, 0]], [[10, 1000]], true);
+  check([[10, 40]], [], true);
+  check([[10, 0]], [[10, 0]], false);
+  api.applySocketMessage({ type: "hunt-catalog", payload: { hunts: [{ loot: [{ itemId: 10, weight: 200 }] }] } });
+  check([[10, 1]], [[10, 500]], true); // Iron Ore: 500 gold / 2 oz = 250 gp/oz.
   assert.equal(api.collectDefaultLoot("unknown"), true);
   api.applySocketMessage({ type: "imbuement-materials", payload: { items: [10] } });
   assert.equal(api.collectDefaultLoot("10"), true);
