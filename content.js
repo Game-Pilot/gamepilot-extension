@@ -450,7 +450,7 @@ async function handleCommand(command, commandId, payload = {}) {
 
 function thresholdReached(gameState) {
   const backpack = gameState?.backpack?.percent;
-  const threshold = Number(automationConfig.backpackReturnPercent || 85);
+  const threshold = Number(automationPayload?.loot?.backpackReturnPercent ?? automationConfig.backpackReturnPercent ?? 85);
   if (backpack == null || backpack < threshold) return false;
   // At/above the threshold, return — unless we tried recently. This cooldown
   // replaces the old "armed" boolean, which stuck forever when a sale failed and
@@ -531,21 +531,22 @@ function scheduleArrowSwitchCycle() {
 
 async function runAutomationCycle(gameState) {
   if (!validateAutomationCharacter(gameState)) return;
-  if (!automationEnabled || automationBusy || commandBusy || !thresholdReached(gameState)) return;
+  if (!automationEnabled || automationBusy || commandBusy) return;
   const adapter = globalThis.GamePilotAdapters?.huntera;
-  if (gameState?.inHunt && adapter?.dispatchHuntLoot) {
+  const returnNeeded = thresholdReached(gameState);
+  if (gameState?.inHunt && automationPayload?.loot?.useAutoSell !== false && adapter?.dispatchHuntLoot) {
     automationBusy = true;
-    showBanner("mochila no limite; tentando despachar o loot da hunt");
+    if (returnNeeded) showBanner("mochila no limite; tentando usar o autosell");
     try {
       const dispatched = await adapter.dispatchHuntLoot(automationPayload?.loot || {});
       if (dispatched?.ok && dispatched.dispatched) {
         const afterDispatch = adapter.readState?.() || gameState;
         const afterPercent = Number(afterDispatch?.backpack?.percent);
-        const returnPercent = Number(automationConfig.backpackReturnPercent || 85);
+        const returnPercent = Number(automationPayload?.loot?.backpackReturnPercent ?? automationConfig.backpackReturnPercent ?? 85);
         await sendEvent({
           type: "items.dispatched",
           message: `Loot despachado durante a hunt${dispatched.itemCount ? ` (${dispatched.itemCount} item(ns))` : ""}`,
-          details: { ...dispatched, automatic: true, reason: "threshold", gameState: afterDispatch }
+          details: { ...dispatched, automatic: true, reason: returnNeeded ? "threshold" : "autosell-available", gameState: afterDispatch }
         });
         if (Number.isFinite(afterPercent) && afterPercent < returnPercent) {
           lastReturnAt = 0;
@@ -558,13 +559,14 @@ async function runAutomationCycle(gameState) {
     } catch (error) {
       await sendEvent({
         type: "items.dispatch-failed",
-        message: `${error.message || "Não foi possível despachar o loot"}; seguindo com o retorno`,
-        details: { automatic: true, reason: "threshold" }
+        message: `${error.message || "Não foi possível despachar o loot"}${returnNeeded ? "; seguindo com o retorno" : ""}`,
+        details: { automatic: true, reason: returnNeeded ? "threshold" : "autosell-available" }
       });
     } finally {
       automationBusy = false;
     }
   }
+  if (!returnNeeded && !thresholdReached(gameState)) return;
   if (automationPayload?.operation === 'group-hunt') {
     if (!gameState?.inHunt && !gameState?.inTown) return;
     mode = 'resupply-requested';

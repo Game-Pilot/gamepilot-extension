@@ -21,6 +21,12 @@ function harness() {
   vm.runInContext(source.slice(source.indexOf('function operationReport('), source.indexOf('function acceptAgentCommand(')), c);
   return { c, calls, events, state };
 }
+test('account loot return percentage overrides the legacy hunt threshold', () => {
+  const c = vm.createContext({ automationPayload: { loot: { backpackReturnPercent: 60 } }, automationConfig: { backpackReturnPercent: 90 }, lastReturnAt: 0, RETURN_COOLDOWN_MS: 30000, Date });
+  vm.runInContext(source.slice(source.indexOf('function thresholdReached('), source.indexOf('function arrowSwitchSettings(')), c);
+  assert.equal(c.thresholdReached({ backpack: { percent: 70 } }), true);
+  assert.equal(c.thresholdReached({ backpack: { percent: 50 } }), false);
+});
 test('full bag requests coordination even if Huntera already returned to town', async () => {
   for (const inHunt of [true, false]) {
     const h = harness(); await h.c.runAutomationCycle({ ...h.state, inHunt });
@@ -41,6 +47,18 @@ test('dispatches hunt loot before requesting a coordinated return', async () => 
   assert.equal(h.c.automationEnabled, true);
   assert.ok(h.events.some(e => e.type === 'items.dispatched'));
 });
+test('uses account autosell while hunting before the bag reaches the return limit', async () => {
+  const h = harness();
+  h.state.inHunt = true; h.state.inTown = false;
+  h.c.automationPayload.loot = { useAutoSell: true, backpackReturnPercent: 85 };
+  h.c.GamePilotAdapters.huntera.dispatchHuntLoot = async () => { h.calls.push('dispatch'); return { ok: true, dispatched: true, itemCount: 1 }; };
+  h.c.GamePilotAdapters.huntera.readState = () => ({ ...h.state, backpack: { percent: 35 } });
+  h.c.thresholdReached = state => Number(state?.backpack?.percent) >= 85;
+  await h.c.runAutomationCycle({ ...h.state, backpack: { percent: 40 } });
+  assert.deepEqual(h.calls, ['dispatch']);
+  assert.equal(h.c.mode, 'hunting');
+  assert.equal(h.events.find(e => e.type === 'items.dispatched')?.details?.reason, 'autosell-available');
+});
 test('falls back to the coordinated return when hunt loot dispatch fails', async () => {
   const h = harness();
   h.state.inHunt = true; h.state.inTown = false;
@@ -49,6 +67,16 @@ test('falls back to the coordinated return when hunt loot dispatch fails', async
   assert.deepEqual(h.calls, ['dispatch', 'persist']);
   assert.equal(h.c.mode, 'resupply-requested');
   assert.ok(h.events.some(e => e.type === 'items.dispatch-failed'));
+});
+test('skips hunt autosell when the account loot setting disables it', async () => {
+  const h = harness();
+  h.state.inHunt = true; h.state.inTown = false;
+  h.c.automationPayload.loot = { useAutoSell: false, backpackReturnPercent: 85 };
+  h.c.GamePilotAdapters.huntera.dispatchHuntLoot = async () => { h.calls.push('dispatch'); return { ok: true, dispatched: true }; };
+  await h.c.runAutomationCycle({ ...h.state, backpack: { percent: 90 } });
+  assert.deepEqual(h.calls, ['persist']);
+  assert.equal(h.c.mode, 'resupply-requested');
+  assert.ok(!h.events.some(e => e.type === 'items.dispatched'));
 });
 test('coordinated command returns, sells and preserves the original hunt identity while waiting', async () => {
   const h = harness(); await h.c.handleCommand('group-resupply', 'sell', { operation: 'group-hunt', characterName: 'Leader', group: { id: 'g', sourceStartCommandId: 'start' } });
