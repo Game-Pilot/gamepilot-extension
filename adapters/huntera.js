@@ -2992,7 +2992,13 @@
       if (quotedCost == null) return { ok: false, error: `${application.imbuementName}: o Huntera não informou a taxa de aplicação`, applied, spent };
       if (spent + quotedCost > maxSpend) return { ok: false, error: `O custo atual ultrapassa o limite aprovado de ${maxSpend.toLocaleString("pt-BR")} gp`, applied, spent };
       apply.click();
-      const confirmation = await waitFor(".imbuement-confirm, .imbue-confirm, [data-dialog='imbuement-confirm'], .confirm-dialog, [role='dialog']", 2500, true);
+      // Huntera keeps a hidden dialog mounted alongside the visible
+      // confirmation. waitFor() intentionally observes the first CSS match,
+      // so resolve the visible match explicitly instead of getting stuck on
+      // that hidden sibling.
+      const confirmationSelector = ".imbuement-confirm, .imbue-confirm, [data-dialog='imbuement-confirm'], .confirm-dialog, dialog[open], [role='dialog']";
+      const confirmationReady = await waitUntil(() => [...document.querySelectorAll(confirmationSelector)].some(visible), 2500);
+      const confirmation = confirmationReady ? [...document.querySelectorAll(confirmationSelector)].find(visible) : null;
       if (!confirmation) return { ok: false, error: `${application.imbuementName}: o Huntera não apresentou a confirmação`, applied, spent };
       const dataCost = Number(confirmation.dataset.cost);
       const displayedCost = Number.isFinite(dataCost) && dataCost >= 0 ? dataCost : (goldAmount(confirmation.textContent) ?? quotedCost);
