@@ -2314,7 +2314,7 @@
   }
 
   // Huntera weights are hundredths of an ounce; prices are per item.
-  const MIN_DEFAULT_LOOT_GP_PER_OZ = 10;
+  const MIN_DEFAULT_LOOT_GP_PER_OZ = 4;
   function collectDefaultLoot(itemId) {
     if (bossLootItem(itemId) || !socketState.imbuementMaterialIds || socketState.imbuementMaterialIds.has(String(itemId))) return true;
     const items = (socketState.messages["hunt-catalog"]?.hunts || []).flatMap(hunt => hunt.loot || []);

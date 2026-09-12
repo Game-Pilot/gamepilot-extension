@@ -806,10 +806,10 @@ test("default collection uses market first, NPC fallback and gp per ounce", () =
     api.applySocketMessage({ type: "item-values", payload: { auction, npc } });
     assert.equal(api.collectDefaultLoot("10"), expected);
   };
-  check([[10, 99]], [[10, 1000]], false);
-  check([[10, 100]], [[10, 1]], true);
-  check([], [[10, 99]], false);
-  check([], [[10, 100]], true);
+  check([[10, 39]], [[10, 1000]], false);
+  check([[10, 40]], [[10, 1]], true);
+  check([], [[10, 39]], false);
+  check([], [[10, 40]], true);
   check([], [], true);
   check([[10, 0]], [[10, 1000]], false);
   assert.equal(api.collectDefaultLoot("unknown"), true);
