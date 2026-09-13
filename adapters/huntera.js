@@ -1055,8 +1055,27 @@
       const escaped = target.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
       const contains = labels.some((label) => new RegExp("(^|\\s)" + escaped + "(\\s|$)", "i").test(label));
       if (!exactAttribute && !exactText && !contains) return null;
-      const clickTarget = element.matches("button, a, [role=\"button\"]") ? element : element.querySelector("button, a, [role=\"button\"]") || element;
-      return { element: clickTarget, score: exactAttribute ? 0 : exactText ? 1 : 2, length: element.textContent?.trim().length || 0 };
+      const interactive = element.matches("button, a, [role=\"button\"]");
+      const controls = [...new Set([
+        ...(interactive ? [element] : []),
+        ...element.querySelectorAll("button, a, [role=\"button\"]")
+      ])].filter((control) => visible(control) && !control.disabled);
+      const controlLabel = (control) => normalizeItemName([
+        control.textContent, control.getAttribute("aria-label"), control.getAttribute("title"),
+        control.dataset.action, control.dataset.testid, control.id, control.className
+      ].filter(Boolean).join(" "));
+      // A character card can expose Delete before Connect. Never infer an
+      // action from DOM order: reject destructive controls and prefer an
+      // explicitly named entry action within the matching character card.
+      const destructive = (control) => /(?:^|[\s_-])(?:delete|remove|trash|excluir|apagar|deletar|remover)(?:$|[\s_-])/.test(controlLabel(control));
+      const entryAction = (control) => /(?:^|[\s_-])(?:connect|reconnect|play|enter|login|select|continue|conectar|reconectar|entrar|jogar|selecionar|continuar)(?:$|[\s_-])/.test(controlLabel(control));
+      const safeControls = controls.filter((control) => !destructive(control));
+      const clickTarget = safeControls.find(entryAction)
+        || (interactive && !destructive(element) ? element : null)
+        || (safeControls.length === 1 ? safeControls[0] : null);
+      if (!clickTarget) return null;
+      const identityScore = exactAttribute ? 0 : exactText ? 1 : 2;
+      return { element: clickTarget, score: identityScore * 2 + (entryAction(clickTarget) ? 0 : 1), length: element.textContent?.trim().length || 0 };
     }).filter(Boolean).sort((left, right) => left.score - right.score || left.length - right.length);
     return candidates[0]?.element || null;
   }

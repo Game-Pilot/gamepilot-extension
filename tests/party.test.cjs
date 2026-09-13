@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, collectDefaultLoot, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, collectDefaultLoot, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, characterCandidate, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -379,6 +379,50 @@ test("still recognizes genuine character-selection text", () => {
   const api = adapter();
   api.configureDocument({ body: { innerText: "Escolha seu personagem para continuar" } });
   assert.equal(api.characterSelectionVisible(), true);
+});
+
+function characterButton(label, className = "") {
+  return {
+    textContent: "", className, id: "", dataset: {}, hidden: false, disabled: false, clicks: 0,
+    getAttribute: (name) => name === "aria-label" ? label : null,
+    getBoundingClientRect: () => ({ width: 36, height: 36 }),
+    matches: (selector) => selector.includes("button"),
+    querySelectorAll: () => [],
+    click() { this.clicks++; }
+  };
+}
+
+function characterCard(name, buttons) {
+  return {
+    textContent: `${name} ${buttons.map((button) => button.getAttribute("aria-label")).join(" ")}`,
+    className: "character-card", id: "", dataset: { characterName: name }, hidden: false,
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 300, height: 120 }),
+    matches: () => false,
+    querySelectorAll: () => buttons
+  };
+}
+
+test("reconnect chooses Connect even when Delete is the first character-card button", () => {
+  const api = adapter();
+  const remove = characterButton("Excluir Holyae", "action-remove");
+  const connect = characterButton("Conectar Holyae", "action-connect");
+  const card = characterCard("Holyae", [remove, connect]);
+  api.configureDocument({ querySelectorAll: () => [card, remove, connect] });
+  const candidate = api.characterCandidate("Holyae");
+  candidate.click();
+  assert.equal(candidate, connect);
+  assert.equal(connect.clicks, 1);
+  assert.equal(remove.clicks, 0);
+});
+
+test("reconnect refuses to use Delete when it is the only character-card action", () => {
+  const api = adapter();
+  const remove = characterButton("Delete Holyae", "character-delete");
+  const card = characterCard("Holyae", [remove]);
+  api.configureDocument({ querySelectorAll: () => [card, remove] });
+  assert.equal(api.characterCandidate("Holyae"), null);
+  assert.equal(remove.clicks, 0);
 });
 
 for (const title of ["Party invitation", "Convite de party", "Convite para o grupo"]) {
