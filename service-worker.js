@@ -1,9 +1,7 @@
 // The unpacked production build talks to the GamePilot API. Local development
 // can temporarily point this URL to http://127.0.0.1:4317.
 const API = "https://gamepilot-api.iancosta.dev";
-if (API === 'http://127.0.0.1:4317') {
-  globalThis.startGamepilotBrowserLauncher?.(API);
-}
+globalThis.startGamepilotBrowserLauncher?.(API);
 const WEB = API.includes("127.0.0.1") || API.includes("localhost")
   ? "http://127.0.0.1:3000"
   : "https://gamepilot-web.iancosta.dev";

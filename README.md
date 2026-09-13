@@ -103,6 +103,13 @@ Use somente um perfil de teste do Chrome. O token e as permissões são provisó
 
 ## Usar com a API publicada
 
+O login remoto agora também funciona com a API de produção. Cadastre a conta em
+**Contas Huntera** no portal, escolha esta extensão e mantenha o Chrome aberto.
+O agente verifica solicitações a cada minuto, abre a aba de login e seleciona o
+personagem. A senha só permanece em memória durante a operação; não é gravada
+no armazenamento da extensão. A identificação de personagens exige autenticação
+com o login da solicitação para não associar uma sessão anterior à conta errada.
+
 Esta versão aponta para `https://gamepilot-api.iancosta.dev`. Depois de atualizar os arquivos da extensão, abra `chrome://extensions`, clique em **Reload** e faça o vínculo novamente se o dispositivo anterior estiver revogado.
 
 Para desenvolvimento local, altere a constante `API` no `service-worker.js` para `http://127.0.0.1:4317` e mantenha a permissão local no `manifest.json`.

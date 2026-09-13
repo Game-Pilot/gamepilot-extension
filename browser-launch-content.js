@@ -10,10 +10,11 @@
       entry: ['/login', '/characters'].includes(location.pathname), connected: state?.socket?.connected === true };
   }
   async function connect(job) {
-    if (location.origin !== 'https://huntera.com.br' || !job?.id || !job.characterName) return { error: true, code: 'wrong-page' };
+    if (location.origin !== 'https://huntera.com.br' || !job?.id || (!job.characterName && !job.discover)) return { error: true, code: 'wrong-page' };
     if (!adapter()) return { waiting: true, phase: 'loading-adapter' };
     const state = inspect();
     if (location.pathname === '/game') {
+      if (job.discover) return { error: true, code: 'login-required' };
       if (state.characterName && normalize(state.characterName) !== normalize(job.characterName)) return { error: true, code: 'wrong-character' };
       if (!state.connected || normalize(state.characterName) !== normalize(job.characterName)) return { waiting: true, phase: 'connecting' };
       const death = [...document.querySelectorAll('[role="alertdialog"]')].find(element => visible(element) && /você morreu|you died/i.test(element.textContent));
@@ -28,6 +29,17 @@
       return { ok: true, phase: 'ready' };
     }
     if (location.pathname === '/characters') {
+      if (job.discover) {
+        // Only associate a roster after this exact job submitted the saved login.
+        if (sessionStorage.getItem('gamepilot.loginSubmitted') !== job.id) return { error: true, code: 'login-required' };
+        const characters = [...document.querySelectorAll('article')].map(card => {
+          const name = card.querySelector('.character-meta > strong')?.textContent?.trim();
+          const play = [...card.querySelectorAll('button')].some(button => /^(jogar|play)$/i.test(button.textContent.trim()));
+          const level = card.textContent.match(/(?:level|nível|lv\.?)[\s:]*(\d+)/i);
+          return name && play ? { name, level: level ? Number(level[1]) : null } : null;
+        }).filter(Boolean);
+        return characters.length ? { ok: true, characters, phase: 'ready' } : { waiting: true, phase: 'selecting' };
+      }
       if (selecting) return { waiting: true, phase: 'selecting' };
       selecting = true;
       try {
@@ -49,13 +61,14 @@
     // Never retry a rejected password or submit registration/reset forms.
     const submittedKey = 'gamepilot.loginSubmitted';
     if (sessionStorage.getItem(submittedKey) === job.id) return { waiting: true, phase: 'logging-in' };
-    if (!job.email || !job.password || submit.disabled) return { waiting: true, phase: 'login-form' };
+    if (!job.email || !job.password) return { waiting: true, phase: 'login-form' };
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     for (const [element, value] of [[email, job.email], [password, job.password]]) {
       setter.call(element, value);
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }
+    if (submit.disabled) return { waiting: true, phase: 'login-form' };
     sessionStorage.setItem(submittedKey, job.id);
     submit.click();
     return { waiting: true, phase: 'logging-in' };

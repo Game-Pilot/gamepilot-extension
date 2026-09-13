@@ -57,6 +57,20 @@ test('submits login once per job, including subsequent delivery after navigation
   assert.equal(p.email.value, 'test@example.com');
   assert.equal(p.password.value, 'dummy');
 });
+test('account discovery only accepts a roster after the same job submitted its saved login', async () => {
+  const job = { id: 'discover-job', discover: true, email: 'test@example.com', password: 'dummy' };
+  const oldSession = page({ path: '/characters' });
+  assert.equal((await oldSession.send(job)).code, 'login-required');
+  const fresh = page();
+  await fresh.send(job);
+  fresh.context.location.pathname = '/characters';
+  fresh.context.document.querySelectorAll = () => [{ textContent: 'HanumLevel 185Jogar', querySelector: () => ({ textContent: 'Hanum' }), querySelectorAll: () => [{ textContent: 'Jogar' }] }];
+  const result = await fresh.send(job);
+  assert.equal(result.ok, true);
+  assert.equal(result.characters[0].name, 'Hanum');
+  assert.equal(result.characters[0].level, 185);
+  assert.equal((await fresh.send({ ...job, id: 'different-job' })).code, 'login-required');
+});
 
 test('entry scripts load when the DOM is ready without waiting for all assets', () => {
   const manifest = JSON.parse(readFileSync(join(__dirname, '../manifest.json'), 'utf8'));
