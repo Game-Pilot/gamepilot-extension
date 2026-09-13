@@ -771,11 +771,13 @@ function acceptAgentCommand(response) {
   if (response.commandId && activeCommandIds.has(response.commandId)) return true;
   commandBusy = true;
   if (response.commandId) activeCommandIds.add(response.commandId);
-  // Coordinated resupply must preempt opportunistic autosell just like a
-  // manual return; otherwise it can remain queued while the tab reports busy.
-  const interrupt = ["stop", "return-town", "group-resupply"].includes(response.command);
-  if (interrupt) {
-    interrupting = true;
+  // Coordinated resupply must preempt opportunistic autosell, but it is not a
+  // user cancellation. Marking it as `interrupting` makes its own handler abort
+  // immediately after leaving the hunt, before opening the store.
+  const interrupt = ["stop", "return-town"].includes(response.command);
+  const preemptsAutomation = interrupt || response.command === "group-resupply";
+  if (preemptsAutomation) {
+    if (interrupt) interrupting = true;
     automationEnabled = false;
     recoveryPending = false;
     persistAutomationState();

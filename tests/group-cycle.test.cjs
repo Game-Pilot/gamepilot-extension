@@ -8,19 +8,21 @@ function harness() {
   const calls = [], events = [];
   const state = { character: { name: 'Leader' }, inTown: true, inHunt: false };
   const c = vm.createContext({ Date, console, mode: 'hunting', automationEnabled: true, automationBusy: false, commandBusy: false, interrupting: false,
+    activeCommandIds: new Set(), activeCommand: Promise.resolve(), recoveryPending: false,
     accountLootConfig: null,
     automationConfig: {}, automationActions: [], automationPayload: { operation: 'group-hunt', group: { id: 'g', startCommandId: 'start' } },
     completedCommands: new Map(), validateAutomationCharacter: () => true, thresholdReached: () => true,
     showBanner() {}, persistAutomationState() { calls.push('persist'); },
     sendEvent: async e => events.push(e), reportCommand: async () => {}, rememberCompletedCommand: () => {},
     sellAndCloseStore: async () => { calls.push('sell'); return { ok: true }; },
-    GamePilotAdapters: { huntera: { readState: () => state, leaveHunt: async () => { calls.push('leave'); return { ok: true }; },
+    GamePilotAdapters: { huntera: { readState: () => state, cancelPending: () => calls.push('cancel'), leaveHunt: async () => { calls.push('leave'); return { ok: true }; },
       openStore: async () => { calls.push('shop'); return { ok: true }; } } }
   });
   vm.runInContext(source.slice(source.indexOf('async function handleCommand('), source.indexOf('function thresholdReached(')), c);
   vm.runInContext(source.slice(source.indexOf('function activeLootConfig('), source.indexOf('function thresholdReached(')), c);
   vm.runInContext(source.slice(source.indexOf('async function runAutomationCycle('), source.indexOf('async function runAutoTrainingCycle(')), c);
   vm.runInContext(source.slice(source.indexOf('function operationReport('), source.indexOf('function acceptAgentCommand(')), c);
+  vm.runInContext(source.slice(source.indexOf('function acceptAgentCommand('), source.indexOf('function sendState(')), c);
   return { c, calls, events, state };
 }
 test('account loot return percentage overrides the legacy hunt threshold', () => {
@@ -128,6 +130,15 @@ test('coordinated command returns, sells and preserves the original hunt identit
   assert.deepEqual(h.calls, ['leave', 'shop', 'sell', 'persist']);
   assert.equal(h.c.mode, 'resupply-ready'); assert.equal(h.c.operationReport(h.state).group.startCommandId, 'start');
   assert.ok(h.events.some(e => e.type === 'group.member-returned'));
+});
+test('priority group resupply preempts autosell without cancelling its own sale', async () => {
+  const h = harness();
+  assert.equal(h.c.acceptAgentCommand({ command: 'group-resupply', commandId: 'sell', payload: { operation: 'group-hunt', characterName: 'Leader', group: { id: 'g', sourceStartCommandId: 'start' } } }), true);
+  await h.c.activeCommand;
+  assert.deepEqual(h.calls, ['persist', 'cancel', 'leave', 'shop', 'sell', 'persist']);
+  assert.equal(h.c.mode, 'resupply-ready');
+  assert.equal(h.c.interrupting, false);
+  assert.ok(!h.events.some(e => e.type === 'automation.error'));
 });
 test('sale failure and wrong character never signal readiness', async () => {
   for (const wrongCharacter of [true, false]) {
