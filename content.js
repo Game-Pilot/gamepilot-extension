@@ -543,6 +543,11 @@ function scheduleArrowSwitchCycle() {
 
 async function runAutomationCycle(gameState) {
   if (automationBusy || commandBusy) return;
+  // Once a group member requests coordinated resupply, the next action must
+  // come from the API. Re-running the opportunistic in-hunt autosell here made
+  // every heartbeat report the tab as busy, so the worker requested only
+  // stop/return interrupts and the queued group-resupply command expired.
+  if (["resupply-requested", "resupply-ready"].includes(mode)) return;
   const managedHunt = automationEnabled;
   if (managedHunt && !validateAutomationCharacter(gameState)) return;
   const adapter = globalThis.GamePilotAdapters?.huntera;
@@ -766,7 +771,9 @@ function acceptAgentCommand(response) {
   if (response.commandId && activeCommandIds.has(response.commandId)) return true;
   commandBusy = true;
   if (response.commandId) activeCommandIds.add(response.commandId);
-  const interrupt = ["stop", "return-town"].includes(response.command);
+  // Coordinated resupply must preempt opportunistic autosell just like a
+  // manual return; otherwise it can remain queued while the tab reports busy.
+  const interrupt = ["stop", "return-town", "group-resupply"].includes(response.command);
   if (interrupt) {
     interrupting = true;
     automationEnabled = false;

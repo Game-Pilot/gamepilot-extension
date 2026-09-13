@@ -37,6 +37,17 @@ test('full bag requests coordination even if Huntera already returned to town', 
     assert.equal(h.c.operationReport({ inHunt }).phase, 'resupply-requested');
   }
 });
+test('waiting for coordinated resupply does not restart opportunistic autosell', async () => {
+  const h = harness();
+  h.c.mode = 'resupply-requested';
+  h.c.automationEnabled = false;
+  h.c.accountLootConfig = { useAutoSell: true, backpackReturnPercent: 85 };
+  h.c.GamePilotAdapters.huntera.dispatchHuntLoot = async () => { h.calls.push('dispatch'); return { ok: true, dispatched: true }; };
+  await h.c.runAutomationCycle({ ...h.state, inHunt: true, inTown: false, backpack: { percent: 100 } });
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.c.mode, 'resupply-requested');
+  assert.equal(h.c.automationBusy, false);
+});
 test('dispatches hunt loot before requesting a coordinated return', async () => {
   const h = harness();
   h.state.inHunt = true; h.state.inTown = false;
