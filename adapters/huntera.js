@@ -1045,10 +1045,12 @@
   function characterCandidate(characterName) {
     const target = normalizeItemName(characterName);
     if (!target) return null;
-    const selectors = "button, a, [role=\"button\"], [data-character-id], [data-character-name], [class*=\"character\"], li";
+    const selectors = "button, a, [role=\"button\"], [data-character-id], [data-character-name], [class*=\"character\"], article, li";
     const candidates = [...document.querySelectorAll(selectors)].filter(visible).map((element) => {
       const labels = [
-        element.dataset.characterName, element.dataset.name, element.getAttribute("aria-label"), element.textContent
+        element.dataset.characterName, element.dataset.name, element.getAttribute("aria-label"),
+        element.matches("article") ? element.querySelector(".character-meta > strong")?.textContent : null,
+        element.textContent
       ].filter(Boolean).map(normalizeItemName);
       const exactAttribute = [element.dataset.characterName, element.dataset.name].filter(Boolean).some((label) => normalizeItemName(label) === target);
       const exactText = labels.some((label) => label === target);

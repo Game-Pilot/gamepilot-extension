@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "GamePilot Local Agent",
-  "version": "0.9.15",
+  "version": "0.9.18",
   "description": "Agente local do MVP GamePilot para operar e monitorar uma aba do Huntera.",
-  "minimum_chrome_version": "116",
-  "permissions": ["storage", "sidePanel", "alarms"],
+  "minimum_chrome_version": "118",
+  "permissions": ["storage", "sidePanel", "alarms", "debugger"],
   "side_panel": { "default_path": "popup.html" },
   "incognito": "split",
   "host_permissions": [
@@ -15,20 +15,20 @@
     "http://127.0.0.1:4317/*"
   ],
   "background": {
-    "service_worker": "service-worker.js",
+    "service_worker": "worker.js",
     "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["https://huntera.com.br/*"],
-      "js": ["socket-bridge.js"],
+      "js": ["socket-bridge.js", "energy-saver-main.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["https://huntera.com.br/*"],
-      "js": ["observed-analyzer.js", "economy-observation.js", "adapters/huntera.js", "content.js"],
-      "run_at": "document_idle"
+      "js": ["energy-saver.js", "observed-analyzer.js", "economy-observation.js", "adapters/huntera.js", "content.js", "browser-launch-content.js"],
+      "run_at": "document_end"
     }
   ],
   "action": {

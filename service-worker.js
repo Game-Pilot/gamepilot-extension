@@ -1,6 +1,9 @@
 // The unpacked production build talks to the GamePilot API. Local development
 // can temporarily point this URL to http://127.0.0.1:4317.
 const API = "https://gamepilot-api.iancosta.dev";
+if (API === 'http://127.0.0.1:4317') {
+  globalThis.startGamepilotBrowserLauncher?.(API);
+}
 const WEB = API.includes("127.0.0.1") || API.includes("localhost")
   ? "http://127.0.0.1:3000"
   : "https://gamepilot-web.iancosta.dev";
@@ -300,13 +303,13 @@ async function api(path, options = {}, reliability = {}) {
   throw lastError;
 }
 
-async function pairDevice(code) {
+async function pairDevice(code, profileName) {
   const data = await api("/api/v1/extension/pair", {
     method: "POST",
     body: JSON.stringify({
       code: String(code || "").trim().toUpperCase(),
       installationId: await installationId(),
-      name: "Chrome",
+      name: String(profileName || '').trim() ? `Chrome · ${String(profileName).trim().slice(0, 60)}` : "Chrome",
       browser: "Chrome",
       extensionVersion: chrome.runtime.getManifest().version
     })
@@ -346,7 +349,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === "pair-device") {
     (async () => {
-      const data = await pairDevice(message.code);
+      const data = await pairDevice(message.code, message.profileName);
       sendResponse({ ok: true, ...data });
     })().catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

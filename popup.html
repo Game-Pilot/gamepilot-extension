@@ -11,6 +11,17 @@
     <p class="app-caption">HUNTERA · PAINEL DE CAÇADA</p>
 
     <div class="stack">
+      <section class="energy-card">
+        <label class="energy-toggle" for="energy-saver"><span>Economia de energia</span><input id="energy-saver" type="checkbox" role="switch" disabled aria-describedby="energy-description energy-status"></label>
+        <p id="energy-description" class="note">Nesta aba: oculta o cenário e reduz seu desenho. Os controles continuam disponíveis. Desative para voltar a ver o jogo.</p>
+        <p id="energy-status" class="note" role="status">Selecione uma aba do Huntera.</p>
+        <button id="benchmark-start" type="button" class="secondary">Executar benchmark nesta aba</button>
+        <button id="benchmark-cancel" type="button" class="secondary" hidden>Cancelar benchmark</button>
+        <p class="note">Cerca de 2 minutos. Alterna desligado → ligado → desligado e restaura sua escolha. Mantenha a aba visível, sem redimensionar ou abrir o DevTools.</p>
+        <p id="benchmark-status" class="note" role="status" aria-live="polite"></p>
+        <div id="benchmark-result" hidden></div>
+        <button id="benchmark-export" type="button" class="secondary" hidden>Salvar relatório JSON</button>
+      </section>
       <section id="hunt-analyzer">
         <div class="section-title"><h2>Sua caçada</h2><span class="tag">Medição própria</span></div>
         <h3 id="observed-character">Aguardando personagem</h3>
@@ -39,6 +50,7 @@
         <div class="detail"><span>Abas ativas</span><strong id="active-tabs">0</strong></div>
       </div>
       <form id="pair-form">
+        <label>Nome do perfil do Chrome<input id="profile-name" maxlength="60" autocomplete="off" placeholder="Ex.: LocalDebug ou Pessoal" required></label>
         <label>Código gerado no painel<input id="pair-code" maxlength="8" minlength="8" autocomplete="one-time-code" placeholder="AB12CD34" required></label>
         <button type="submit">Vincular extensão</button>
       </form>
@@ -46,6 +58,8 @@
       <p id="result" aria-live="polite"></p>
       </div></details>
     </div>
+    <script src="energy-saver-popup.js"></script>
+    <script src="benchmark-popup.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

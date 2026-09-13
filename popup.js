@@ -80,7 +80,9 @@ $("#pair-form").addEventListener("submit", async (event) => {
   const code = $("#pair-code").value.replace(/[^a-z0-9]/gi, "").toUpperCase();
   if (code.length !== 8) { setResult("Informe os 8 caracteres do código.", true); return; }
   setResult("Vinculando…");
-  const response = await send({ type: "pair-device", code });
+  const profileName = $("#profile-name").value.trim();
+  if (!profileName) { setResult("Informe o nome do perfil do Chrome.", true); return; }
+  const response = await send({ type: "pair-device", code, profileName });
   renderStatus(response);
   if (!response?.ok) { setResult(response.error || "Não foi possível vincular", true); return; }
   $("#pair-code").value = "";

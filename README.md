@@ -1,5 +1,15 @@
 # GamePilot Chrome Extension
 
+### Abertura e login por personagem (ambiente local)
+
+O launcher abre a aba Huntera, usa o login salvo no Gamepilot e seleciona o
+personagem pelo cartão atual do jogo. Os scripts isolados carregam em
+`document_end`, sem esperar todos os recursos da página. O painel informa cada
+etapa. Uma conexão com vida zero não libera a atividade: a tela de morte permite
+uma tentativa de Reviver por pedido e exige vida positiva antes de continuar.
+As credenciais não são persistidas na extensão. Após atualizar o manifesto,
+recarregue a extensão para aplicar o momento de carregamento dos scripts.
+
 Extensão Manifest V3 do MVP. Ela conecta uma aba do Huntera ao GamePilot, envia heartbeat/telemetria à API e recebe comandos do painel.
 
 Antes de retornar à cidade, a extensão ativa a aba do personagem e traz sua janela para frente, inclusive nos retornos automáticos. Isso permite que o loading avance mesmo quando a aba estava em segundo plano e ainda enviava telemetria. Se o Chrome recusar o foco, o retorno informa o erro antes de clicar para sair.
@@ -17,6 +27,71 @@ As métricas do analisador usam os eventos 40/41 do WebSocket do jogo quando dis
 Se o botão não existir ou a tela não confirmar a ação, a extensão reporta falha para o painel e interrompe o ciclo.
 
 ## Carregar localmente
+
+### Benchmark da aba (0.9.17)
+
+No painel lateral, selecione **Executar benchmark nesta aba**. A extensão precisa
+da permissão `debugger` e do Chrome 118 ou mais recente. Recarregue a extensão e
+a página depois da atualização. O Chrome pode mostrar um aviso de depuração;
+essa sessão é encerrada ao concluir ou cancelar. Se outra ferramenta já estiver
+depurando a aba, o teste não começa nem remove a sessão existente.
+
+O worker coleta `Performance.getMetrics` no `tabId` selecionado e alterna o modo
+desligado → ligado → desligado. Cada fase tem 5 segundos de estabilização e 30
+intervalos de aproximadamente 1 segundo (cerca de 2 minutos no total). Não há
+coleta forçada de lixo. O toggle fica bloqueado durante o teste. O modo original
+é restaurado ao concluir, cancelar ou falhar; a página mantém uma restauração
+independente após 3 minutos ou ao recarregar se o worker for interrompido.
+
+Mantenha a aba ativa e visível, o tamanho da janela e a caçada estáveis. Troca de
+aba, mudança de visibilidade/tamanho, recarga, mudança de personagem ou início/fim
+de caçada interrompem a comparação quando detectados na coleta. A geometria de
+referência é obtida após o aviso de depuração do Chrome aparecer.
+
+O relatório mostra **ocupação da thread principal**, calculada por
+`100 × delta TaskDuration / delta Timestamp` com `timeTicks`, e média do heap JS
+em MiB. O JSON inclui tempo de script, layout e recálculo de estilos em ms/s,
+amostras de cada fase, condições e eventuais falhas de restauração. Não confundir
+essas medidas com CPU de todos os threads, RAM total ou GPU. Outros contextos
+que compartilham o renderer podem contribuir, e workers/frames em alvos separados
+não são somados. Não atribui um PID exclusivo nem afirma isolamento total de RAM.
+
+O modo ligado é comparado à média das duas fases desligadas. Diferença entre as
+fases desligadas acima de 3 pontos percentuais ou 20% da média (o maior dos dois)
+gera aviso de instabilidade; é uma heurística, não um teste estatístico. Uma
+execução isolada não prova causalidade. Cancelamentos/falhas não geram comparação
+concluída. Resultados ficam somente em `chrome.storage.session`, com exportação
+JSON pelo painel; não são enviados à API. O último resultado substitui o anterior.
+
+Referências: [Performance CDP](https://chromedevtools.github.io/devtools-protocol/1-3/Performance/),
+[chrome.debugger](https://developer.chrome.com/docs/extensions/reference/api/debugger),
+[ciclo de vida do worker](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle).
+
+### Economia de energia (0.9.16)
+
+O painel tem um toggle **Economia de energia** para a aba Huntera selecionada.
+Começa desligado e salva a escolha por aba durante a sessão, inclusive após recarga.
+Funciona independentemente da API. Após atualizar a extensão, recarregue o jogo para
+carregar os dois scripts novos; o painel indica quando isso for necessário.
+
+Ativado, oculta o canvas do cenário em `.viewport-host`, suprime suas chamadas de
+desenho Canvas 2D/WebGL ao framebuffer da tela e simplifica efeitos dos slots.
+Preserva ícones, controles, DOM, uploads de texturas e renderização WebGL em
+framebuffers intermediários. Não altera RAF, timers, rede ou lógica do jogo.
+Desativar remove a regra visual e restaura os métodos; o próximo desenho normal
+atualiza o cenário. Não encerra a caçada nem exige nova conexão.
+
+É uma otimização gráfica experimental: a preparação das cenas em JavaScript
+continua acontecendo e os assets permanecem em memória. Não promete redução de
+RAM nem uma porcentagem de CPU/GPU. Mudanças no renderer do Huntera ou caminhos
+de desenho por extensões WebGL podem reduzir sua cobertura.
+
+Validação local: `node --test tests/*.test.cjs`. Para medir no jogo, compare a
+mesma aba/caçada por 60 segundos desligada, ligada e desligada novamente no
+Gerenciador de Tarefas do Chrome (Shift+Esc), acompanhando CPU e memória pelo PID;
+acompanhe GPU no Windows. Confirme eventos de XP/vida no GamePilot, retorno e
+início de caçada, e restauração do cenário antes de habilitar nas outras contas.
+Os testes automatizados não substituem essa validação no jogo ao vivo.
 
 1. Abra `chrome://extensions`.
 2. Ative o **Developer mode**.
