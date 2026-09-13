@@ -4,6 +4,7 @@ let automationEnabled = false;
 let automationConfig = {};
 let automationActions = [];
 let automationPayload = {};
+let accountLootConfig = null;
 let automationBusy = false;
 let commandBusy = false;
 let activeCommand = Promise.resolve();
@@ -102,7 +103,7 @@ function rememberCompletedCommand(commandId, completion) {
 }
 function persistAutomationState() {
   try {
-    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, mode, lastOperationError, recoveryPending, lastRecoveryAttemptAt }));
+    sessionStorage.setItem(AUTOMATION_KEY, JSON.stringify({ automationEnabled, automationConfig, automationActions, automationPayload, accountLootConfig, mode, lastOperationError, recoveryPending, lastRecoveryAttemptAt }));
   } catch { /* storage unavailable */ }
 }
 function restoreAutomationState() {
@@ -115,6 +116,9 @@ function restoreAutomationState() {
     automationConfig = saved.automationConfig && typeof saved.automationConfig === "object" ? saved.automationConfig : {};
     automationActions = Array.isArray(saved.automationActions) ? saved.automationActions : [];
     automationPayload = saved.automationPayload && typeof saved.automationPayload === "object" ? saved.automationPayload : {};
+    accountLootConfig = saved.accountLootConfig && typeof saved.accountLootConfig === "object"
+      ? saved.accountLootConfig
+      : automationPayload.loot && typeof automationPayload.loot === "object" ? automationPayload.loot : null;
     if (saved.mode) mode = saved.mode;
     lastOperationError = saved.lastOperationError || null;
   } catch { /* ignore corrupt state */ }
@@ -285,6 +289,8 @@ async function handleCommand(command, commandId, payload = {}) {
       if (result.ok) { mode = "hunting"; recoveryNoticeSent = false; await sendEvent({ type: "hunt.started", message: result.alreadyStarted ? "Caçada já estava em andamento" : payload.resume ? "Caçada retomada após reconexão" : "Caçada iniciada", details: { payload, reconnected: Boolean(payload.resume) } }); }
     } else if (command === "configure-loot") {
       showBanner("sincronizando gestão de loot da conta");
+      accountLootConfig = payload.loot || {};
+      persistAutomationState();
       result = await adapter?.configureAccountLoot?.(payload.loot || {}) || result;
       if (result.ok) {
         automationPayload = { ...automationPayload, loot: payload.loot || {} };
@@ -448,9 +454,15 @@ async function handleCommand(command, commandId, payload = {}) {
   await reportCommand(command, commandId, completion.status, completion.errorMessage, completion.result);
 }
 
+function activeLootConfig() {
+  return accountLootConfig && typeof accountLootConfig === "object"
+    ? accountLootConfig
+    : automationPayload?.loot && typeof automationPayload.loot === "object" ? automationPayload.loot : {};
+}
+
 function thresholdReached(gameState) {
   const backpack = gameState?.backpack?.percent;
-  const threshold = Number(automationPayload?.loot?.backpackReturnPercent ?? automationConfig.backpackReturnPercent ?? 85);
+  const threshold = Number(activeLootConfig().backpackReturnPercent ?? automationConfig.backpackReturnPercent ?? 85);
   if (backpack == null || backpack < threshold) return false;
   // At/above the threshold, return — unless we tried recently. This cooldown
   // replaces the old "armed" boolean, which stuck forever when a sale failed and
@@ -530,25 +542,28 @@ function scheduleArrowSwitchCycle() {
 }
 
 async function runAutomationCycle(gameState) {
-  if (!validateAutomationCharacter(gameState)) return;
-  if (!automationEnabled || automationBusy || commandBusy) return;
+  if (automationBusy || commandBusy) return;
+  const managedHunt = automationEnabled;
+  if (managedHunt && !validateAutomationCharacter(gameState)) return;
   const adapter = globalThis.GamePilotAdapters?.huntera;
+  const lootConfig = activeLootConfig();
   const returnNeeded = thresholdReached(gameState);
-  if (gameState?.inHunt && automationPayload?.loot?.useAutoSell !== false && adapter?.dispatchHuntLoot) {
+  const autoSellEnabled = managedHunt ? lootConfig.useAutoSell !== false : lootConfig.useAutoSell === true;
+  if (gameState?.inHunt && autoSellEnabled && adapter?.dispatchHuntLoot) {
     automationBusy = true;
-    if (returnNeeded) showBanner("mochila no limite; tentando usar o autosell");
+    if (managedHunt && returnNeeded) showBanner("mochila no limite; tentando usar o autosell");
     try {
-      const dispatched = await adapter.dispatchHuntLoot(automationPayload?.loot || {});
+      const dispatched = await adapter.dispatchHuntLoot(lootConfig);
       if (dispatched?.ok && dispatched.dispatched) {
         const afterDispatch = adapter.readState?.() || gameState;
         const afterPercent = Number(afterDispatch?.backpack?.percent);
-        const returnPercent = Number(automationPayload?.loot?.backpackReturnPercent ?? automationConfig.backpackReturnPercent ?? 85);
+        const returnPercent = Number(lootConfig.backpackReturnPercent ?? automationConfig.backpackReturnPercent ?? 85);
         await sendEvent({
           type: "items.dispatched",
           message: `Loot despachado durante a hunt${dispatched.itemCount ? ` (${dispatched.itemCount} item(ns))` : ""}`,
-          details: { ...dispatched, automatic: true, reason: returnNeeded ? "threshold" : "autosell-available", gameState: afterDispatch }
+          details: { ...dispatched, automatic: true, reason: managedHunt && returnNeeded ? "threshold" : "autosell-available", managedHunt, gameState: afterDispatch }
         });
-        if (Number.isFinite(afterPercent) && afterPercent < returnPercent) {
+        if (!managedHunt || (Number.isFinite(afterPercent) && afterPercent < returnPercent)) {
           lastReturnAt = 0;
           mode = "hunting";
           showBanner("loot despachado; caçada mantida");
@@ -559,13 +574,16 @@ async function runAutomationCycle(gameState) {
     } catch (error) {
       await sendEvent({
         type: "items.dispatch-failed",
-        message: `${error.message || "Não foi possível despachar o loot"}${returnNeeded ? "; seguindo com o retorno" : ""}`,
-        details: { automatic: true, reason: returnNeeded ? "threshold" : "autosell-available" }
+        message: `${error.message || "Não foi possível despachar o loot"}${managedHunt && returnNeeded ? "; seguindo com o retorno" : ""}`,
+        details: { automatic: true, reason: managedHunt && returnNeeded ? "threshold" : "autosell-available", managedHunt }
       });
     } finally {
       automationBusy = false;
     }
   }
+  // Account services may assist a manually started hunt, but only a managed
+  // hunt has enough context to leave town, sell and safely resume itself.
+  if (!automationEnabled) return;
   if (!returnNeeded && !thresholdReached(gameState)) return;
   if (automationPayload?.operation === 'group-hunt') {
     if (!gameState?.inHunt && !gameState?.inTown) return;
@@ -809,6 +827,10 @@ function sendState() {
     if (isInvalidatedExtensionContext(runtimeError)) return;
     if (runtimeError) return showBanner("extensão conectada; API offline");
     if (!response?.ok) return showBanner("erro de conexão com a API");
+    if (response.lootConfig && typeof response.lootConfig === "object") {
+      accountLootConfig = response.lootConfig;
+      persistAutomationState();
+    }
     if (!acceptAgentCommand(response)) {
       showBanner(`conectado · ${mode}`);
     }

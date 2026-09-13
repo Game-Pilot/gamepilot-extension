@@ -403,16 +403,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       command = await socketRequest("state", { state, wantsCommand: message.wantsCommand !== false });
     } catch {
-      await api("/api/v1/agent/state", { method: "POST", body: JSON.stringify(state) }, { retries: 2 });
+      const stateResult = await api("/api/v1/agent/state", { method: "POST", body: JSON.stringify(state) }, { retries: 2 });
       // HTTP remains a repair path when a proxy or network blocks WebSockets.
       const query = `?connectionKey=${encodeURIComponent(state.connectionKey || "")}${message.wantsCommand === false ? "&interruptOnly=true" : ""}&redeliver=true`;
       command = await api(`/api/v1/agent/commands${query}`);
+      if (stateResult.lootConfig) command.lootConfig = stateResult.lootConfig;
     }
     sendResponse({
       ok: true,
       command: command.command,
       commandId: command.commandId,
-      payload: command.payload || {}
+      payload: command.payload || {},
+      lootConfig: command.lootConfig || null
     });
   })().catch((error) => sendResponse({ ok: false, error: error.message }));
 

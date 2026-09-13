@@ -15,7 +15,7 @@ function harness() {
     startHunt: async p => { calls.push(p); return { ok: true }; }
   };
   const c = vm.createContext({ Date: class extends Date { static now() { return now; } },
-    automationEnabled: true, automationPayload: payload, automationConfig: payload.hunt, automationActions: [{ actionKey: 'heal' }],
+    automationEnabled: true, automationPayload: payload, accountLootConfig: null, automationConfig: payload.hunt, automationActions: [{ actionKey: 'heal' }],
     recoveryPending: false, lastRecoveryAttemptAt: 0, characterSelectionSince: 0, recoveryNoticeSent: false,
     mode: 'hunting', automationBusy: false, commandBusy: false, interrupting: false, lastOperationError: null,
     RECOVERY_CONFIRM_MS: 5000, RECOVERY_RETRY_MS: 30000, RECOVERY_RELOAD_MS: 60000,
