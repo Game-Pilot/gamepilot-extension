@@ -318,6 +318,7 @@ async function handleCommand(command, commandId, payload = {}) {
       automationEnabled = false;
       mode = 'returning';
       showBanner('retornando com o grupo para vender');
+      await sendEvent({ type: 'group.resupply-started', message: 'Retorno coordenado iniciado', details: { command, commandId, group: payload.group, trigger: payload.group?.trigger || 'group-member' } });
       const returned = await adapter?.leaveHunt?.();
       if (!returned?.ok) throw new Error(returned?.error || 'Não foi possível retornar com o grupo');
       await sendEvent({ type: 'hunt.returned', message: 'Grupo retornou para vender', details: { automatic: true, group: payload.group } });
@@ -438,7 +439,7 @@ async function handleCommand(command, commandId, payload = {}) {
     if (["start", "start-hunt", "bestiary-next"].includes(command)) automationEnabled = false;
     lastOperationError = { command, message: result.error, at: new Date().toISOString() };
     mode = "error";
-    await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error } });
+    await sendEvent({ type: "automation.error", message: result.error, details: { command, commandId, status: "failed", errorMessage: result.error, group: payload.group || null } });
   }
   else if (command === "stop") mode = "idle";
   else if (mode === "error") mode = adapter?.readState?.().inHunt ? "hunting" : "idle"; // a later success clears a stale error banner
@@ -596,6 +597,10 @@ async function runAutomationCycle(gameState) {
     automationEnabled = false;
     persistAutomationState();
     showBanner('mochila no limite; aguardando retorno coordenado do grupo');
+    await sendEvent({ type: 'group.resupply-requested', message: 'Limite da mochila atingido; retorno do grupo solicitado', details: {
+      group: automationPayload.group || null, reason: 'backpack-threshold', backpackPercent: gameState?.backpack?.percent ?? null,
+      returnPercent: Number(activeLootConfig()?.backpackReturnPercent ?? automationConfig?.backpackReturnPercent ?? 85)
+    } });
     return;
   }
   if (!gameState?.inHunt) return;
