@@ -425,7 +425,7 @@ async function handleCommand(command, commandId, payload = {}) {
         automationBusy = false;
       }
     } else if (command === "read-state") {
-      result = { ok: true };
+      result = { ok: true, imbuement: adapter?.readState?.().imbuement || null };
     } else {
       result = { ok: false, error: `Comando ${command} não suportado` };
     }
@@ -447,7 +447,7 @@ async function handleCommand(command, commandId, payload = {}) {
   const completion = {
     status: result.ok ? "completed" : "failed",
     errorMessage: result.ok ? null : result.error,
-    result: command === "quote-imbuements" && result.ok ? result : null
+    result: ["quote-imbuements", "read-state"].includes(command) && result.ok ? result : null
   };
   // Persist before reporting. If the completion acknowledgement is lost, a
   // redelivered command only resends its result and never repeats game input.
