@@ -139,13 +139,13 @@ test("an empty loot list is not a zero valuation", () => {
   assert.equal(api.socketMetrics().balance, null);
 });
 
-test("hunt catalog retains only hunts, clones the payload and resets on reconnect", () => {
+test("hunt catalog retains compact hunt records, clones the payload and resets on reconnect", () => {
   const api = harness();
-  const payload = {hunts: [{id:'fixture', monsters:[{bestiaryId:'vampire'}], tiers:[{name:'Cautious',monsterCount:2,monsterIndexes:[0],loot:['excluded']}],loot:['excluded'],bests:{solo:123}}], privateData:'excluded'};
+  const payload = {hunts: [{id:'fixture', name:'Fixture Cave', description:'Fixture description', monsters:[{bestiaryId:'vampire'}], tiers:[{name:'Cautious',monsterCount:2,monsterIndexes:[0],loot:['excluded']}],loot:['excluded'],bests:{solo:{experiencePerHour:1200,balancePerHour:300},party:{experiencePerHour:4200,balancePerHour:900}}}], privateData:'excluded'};
   api.applySocketMessage({type:'hunt-catalog', code:42, payload});
   payload.hunts[0].id = 'mutated';
   const frame = plain(api.socketAnalyzerObservation().combatFrames['hunt-catalog']);
-  assert.deepEqual(frame.payload, {hunts:[{id:'fixture', monsters:[{bestiaryId:'vampire'}],tiers:[{name:'Cautious',monsterCount:2,monsterIndexes:[0]}]}]});
+  assert.deepEqual(frame.payload, {hunts:[{id:'fixture',name:'Fixture Cave',description:'Fixture description',monsters:[{bestiaryId:'vampire'}],bests:{solo:{experiencePerHour:1200,balancePerHour:300},party:{experiencePerHour:4200,balancePerHour:900}},tiers:[{name:'Cautious',monsterCount:2,monsterIndexes:[0]}]}]});
   assert.equal(frame.omitted, null);
   api.applySocketSnapshot({connected:true, openedAt:'2099-01-01T00:00:00Z'});
   assert.equal(api.socketAnalyzerObservation().combatFrames['hunt-catalog'], undefined);

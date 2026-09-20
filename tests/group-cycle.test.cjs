@@ -20,7 +20,7 @@ function harness() {
   });
   vm.runInContext(source.slice(source.indexOf('async function handleCommand('), source.indexOf('function thresholdReached(')), c);
   vm.runInContext(source.slice(source.indexOf('function activeLootConfig('), source.indexOf('function thresholdReached(')), c);
-  vm.runInContext(source.slice(source.indexOf('async function runAutomationCycle('), source.indexOf('async function runAutoTrainingCycle(')), c);
+  vm.runInContext(source.slice(source.indexOf('async function requestGroupRestartAfterFreeHunt('), source.indexOf('async function runAutoTrainingCycle(')), c);
   vm.runInContext(source.slice(source.indexOf('function operationReport('), source.indexOf('function acceptAgentCommand(')), c);
   vm.runInContext(source.slice(source.indexOf('function acceptAgentCommand('), source.indexOf('function sendState(')), c);
   return { c, calls, events, state };
@@ -37,6 +37,31 @@ test('full bag requests coordination even if Huntera already returned to town', 
     assert.equal(h.c.mode, 'resupply-requested'); assert.equal(h.c.automationEnabled, false);
     assert.deepEqual(h.calls, ['persist']);
     assert.equal(h.c.operationReport({ inHunt }).phase, 'resupply-requested');
+  }
+});
+test('a free account requests a coordinated restart when its hunt time expires', async () => {
+  const h = harness();
+  const requested = await h.c.requestGroupRestartAfterFreeHunt({
+    ...h.state, premium: false, huntSessionRemainingMs: 0
+  });
+  assert.equal(requested, true);
+  assert.equal(h.c.mode, 'restart-requested');
+  assert.equal(h.c.automationEnabled, false);
+  assert.deepEqual(h.calls, ['persist']);
+  assert.equal(h.events[0].type, 'group.restart-requested');
+  assert.equal(h.events[0].details.reason, 'free-hunt-time-ended');
+  assert.equal(h.c.operationReport(h.state).phase, 'restart-requested');
+});
+test('premium accounts and free accounts still entering the hunt do not request a restart', async () => {
+  for (const state of [
+    { ...harness().state, premium: true, huntSessionRemainingMs: 0 },
+    { ...harness().state, premium: false, huntSessionRemainingMs: 0, inTown: false },
+    { ...harness().state, premium: false, huntSessionRemainingMs: 1000 }
+  ]) {
+    const h = harness();
+    assert.equal(await h.c.requestGroupRestartAfterFreeHunt(state), false);
+    assert.equal(h.c.mode, 'hunting');
+    assert.equal(h.c.automationEnabled, true);
   }
 });
 test('waiting for coordinated resupply does not restart opportunistic autosell', async () => {

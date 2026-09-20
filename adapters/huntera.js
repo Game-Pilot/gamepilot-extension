@@ -226,11 +226,13 @@
       // Do not retain backpack contents in equipment deltas.
       if (message.type === "inventory-delta") selected.changes = (Array.isArray(payload.changes) ? payload.changes : []).filter(change => change.slot);
       // Code 42 schema observed on 2026-09-07: tiers index the hunt's monsters.
-      // Preserve those arrays in order; omit loot definitions and leaderboard bests.
+      // Keep the compact catalog data consumed by Gamepilot, including personal
+      // solo and party records, while omitting the much larger loot definitions.
       if (message.type === "hunt-catalog" && Array.isArray(payload.hunts)) {
         selected.hunts = payload.hunts.map(hunt => ({
-          id: hunt.id, name: hunt.name,
+          id: hunt.id, name: hunt.name, description: hunt.description,
           monsters: hunt.monsters,
+          bests: hunt.bests,
           tiers: Array.isArray(hunt.tiers) ? hunt.tiers.map(tier => ({
             name: tier.name, monsterCount: tier.monsterCount, monsterIndexes: tier.monsterIndexes
           })) : hunt.tiers

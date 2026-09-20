@@ -542,13 +542,34 @@ function scheduleArrowSwitchCycle() {
   }, 180);
 }
 
+async function requestGroupRestartAfterFreeHunt(gameState) {
+  const freeTimeEnded = automationEnabled
+    && automationPayload?.operation === 'group-hunt'
+    && gameState?.premium === false
+    && mode === 'hunting'
+    && Number(gameState?.huntSessionRemainingMs) === 0
+    && gameState?.inHunt === false
+    && gameState?.inTown === true;
+  if (!freeTimeEnded) return false;
+  mode = 'restart-requested';
+  automationEnabled = false;
+  persistAutomationState();
+  showBanner('tempo gratuito encerrado; aguardando reinício coordenado do grupo');
+  await sendEvent({
+    type: 'group.restart-requested',
+    message: 'Tempo gratuito de caça encerrado; reinício do grupo solicitado',
+    details: { group: automationPayload.group || null, reason: 'free-hunt-time-ended' }
+  });
+  return true;
+}
+
 async function runAutomationCycle(gameState) {
   if (automationBusy || commandBusy) return;
   // Once a group member requests coordinated resupply, the next action must
   // come from the API. Re-running the opportunistic in-hunt autosell here made
   // every heartbeat report the tab as busy, so the worker requested only
   // stop/return interrupts and the queued group-resupply command expired.
-  if (["resupply-requested", "resupply-ready"].includes(mode)) return;
+  if (["resupply-requested", "resupply-ready", "restart-requested"].includes(mode)) return;
   const managedHunt = automationEnabled;
   if (managedHunt && !validateAutomationCharacter(gameState)) return;
   const adapter = globalThis.GamePilotAdapters?.huntera;
@@ -743,7 +764,7 @@ function operationReport(gameState) {
   const bestiary = automationPayload?.bestiary?.enabled ? automationPayload.bestiary : null;
   const group = automationPayload?.operation === "group-hunt" ? automationPayload.group || {} : null;
   const training = gameState?.training?.active || automationPayload?.operation === "training";
-  const activeMode = ['resupply-requested', 'resupply-ready'].includes(mode) ? mode : gameState?.shopOpen ? "selling"
+  const activeMode = ['resupply-requested', 'resupply-ready', 'restart-requested'].includes(mode) ? mode : gameState?.shopOpen ? "selling"
     : gameState?.training?.active ? "training"
       : mode === "reconnecting" ? "reconnecting"
         : mode === "returning" ? "returning"
@@ -814,10 +835,11 @@ function sendState() {
   try { gameState = adapter?.readState?.() || { gameKey: "huntera", detected: false, page: location.pathname }; }
   catch (error) { showBanner(`falha na leitura: ${error.message}`); return; }
   updateCharacterPageTitle(gameState.detected ? gameState.character?.name : null);
+  void requestGroupRestartAfterFreeHunt(gameState);
   // Transient command modes must not outlive the UI state they describe. This
   // clears a stale `selling` after the shop closes (or after a reload), which
   // previously hid a real training-update behind a false "Vendendo" status.
-  if (!commandBusy && !automationBusy && !['resupply-requested', 'resupply-ready'].includes(mode)) {
+  if (!commandBusy && !automationBusy && !['resupply-requested', 'resupply-ready', 'restart-requested'].includes(mode)) {
     if (gameState.shopOpen) mode = "selling";
     else if (gameState.inHunt) mode = "hunting";
     else if (gameState.training?.active) mode = "training";
