@@ -12,13 +12,13 @@ test('health duration weights elapsed time, includes full health and freezes on 
   a.accept(event(11,'wire-20',{attackerId:7,targetId:8,value:321},20),7);
   a.accept(event(11,'wire-20',{attackerId:7,targetId:8,value:999},20),7);
   const s=a.read();
-  assert.equal(s.healthObservedMs,10000);
+  assert.equal(s.healthObservedMs,8000);
   assert.equal(s.healthTimeBucketsMs[10],2000);
   assert.equal(s.healthTimeBucketsMs[8],6000);
-  assert.equal(s.healthTimeBucketsMs[0],2000);
-  assert.equal(s.healthTimeBucketsMs.reduce((a,b)=>a+b),10000);
-  assert.equal(s.minimumHealth,0);
-  assert.equal(s.minimumHealthPercent,0);
+  assert.equal(s.healthTimeBucketsMs[0],0);
+  assert.equal(s.healthTimeBucketsMs.reduce((a,b)=>a+b),8000);
+  assert.equal(s.minimumHealth,85);
+  assert.equal(s.minimumHealthPercent,85);
   assert.equal(s.maximumHit,321);
   assert.deepEqual(a.read(),s);
   a.accept(event(12,'hunt-analyzer-session',{startedAt:1}),7);

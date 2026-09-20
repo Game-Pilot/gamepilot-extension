@@ -51,7 +51,10 @@
         healthAt = at;
       } else return;
       // Use authoritative own-player stats, never rounded creature percentages.
-      if (message.type === 'player-stats' && numeric(p.health) && numeric(p.maxHealth) && p.maxHealth > 0 && p.health <= p.maxHealth) {
+      // A zero-health player-stats frame is also emitted transiently while the
+      // character/session is loading. Without a confirmed death signal it must
+      // not permanently pin the session minimum to 0%.
+      if (message.type === 'player-stats' && numeric(p.health) && p.health > 0 && numeric(p.maxHealth) && p.maxHealth > 0 && p.health <= p.maxHealth) {
         const percent = p.health / p.maxHealth * 100;
         state.minimumHealth = Math.min(state.minimumHealth ?? p.health, p.health);
         state.minimumHealthPercent = Math.min(state.minimumHealthPercent ?? percent, percent);

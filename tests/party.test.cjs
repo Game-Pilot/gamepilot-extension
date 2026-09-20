@@ -65,7 +65,7 @@ function adapter(cards = [], lootControls = []) {
   });
   let source = fs.readFileSync(path.join(__dirname, "../adapters/huntera.js"), "utf8");
   source = source.replace("  globalThis.GamePilotAdapters =", `
-    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, collectDefaultLoot, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, characterCandidate, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
+    globalThis.testAdapter = { findInviteCard, clickInviteAction, waitUntil, cancelPending, prepareGroup, configureLoot, configureAccountLoot, lootDisposition, collectDefaultLoot, configuredLootPolicy, inventoryLootItems, backpackItemsWithNpcOffers, inventoryRefsForItem, inventoryCountForItem, dispatchSlotMove, confirmSlotMoveQuantity, slotIconFingerprint, warehouseTargetForItem, moveItemsToWarehouse, characterSelectionVisible, characterCandidate, normalizeBestiaryStage, bestiaryStageProgress, socketBestiarySnapshot, bestiaryCompletedPhases, bestiaryThumbnail, applySocketMessage, socketBackpack, socketCreaturesOnScreen, imbuementParts, imbuementItem, emptyImbuementSlot, imbuementOption, imbuementTier, imbuementApplyButton, imbuementMaterials, quoteMarketMaterial, retryableMarketActionError, goldAmount,
       configureDocument(fixture) {
         document.body = fixture.body || null;
         document.querySelector = fixture.querySelector || (() => null);
@@ -841,6 +841,24 @@ test("initialization stops training before any party actions; follower accepts I
   assert.deepEqual(actions, ["stop-training", "members-confirmed", "target", "costs"]);
 });
 
+
+test("derives backpack usage from Huntera free capacity and carried weight", () => {
+  const api = adapter();
+  api.applySocketMessage({ type: "player-stats", payload: { capacity: 600000 } });
+  api.applySocketMessage({ type: "player-inventory", payload: {
+    slots: [{ weight: 300000, count: 1 }],
+    satchel: [{ weight: 200000, count: 1 }],
+    equipment: { armor: { weight: 100000 } }
+  } });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.socketBackpack())), {
+    percent: 50, currentOz: 6000, maxOz: 12000, freeOz: 6000, source: "socket"
+  });
+
+  api.applySocketMessage({ type: "player-stats", payload: { capacity: 0 } });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.socketBackpack())), {
+    percent: 100, currentOz: 6000, maxOz: 6000, freeOz: 0, source: "socket"
+  });
+});
 
 test("default collection uses the higher market or NPC price and gp per ounce", () => {
   const api = adapter();

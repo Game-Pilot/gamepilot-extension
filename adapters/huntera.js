@@ -502,14 +502,25 @@
 
   function socketBackpack() {
     const inventory = socketState.inventory;
-    const capacity = firstNumber(socketState.playerStats?.capacity);
-    if (!inventory || capacity === null || capacity <= 0) return null;
+    // Huntera reports the capacity that is still free, in hundredths of an
+    // ounce. It is not the character's maximum carrying capacity.
+    const freeCapacity = firstNumber(socketState.playerStats?.capacity);
+    if (freeCapacity === null || freeCapacity < 0) return null;
+    const freeOz = Math.round(freeCapacity) / 100;
+    if (!inventory) return { percent: null, currentOz: null, maxOz: null, freeOz, source: "socket" };
     const items = [...inventory.slots, ...inventory.satchel, ...Object.values(inventory.equipment || {})].filter(Boolean);
     const weighted = items.filter((item) => Number.isFinite(Number(item.weight)));
-    if (weighted.length !== items.length) return null;
+    if (weighted.length !== items.length) return { percent: null, currentOz: null, maxOz: null, freeOz, source: "socket" };
     const current = weighted.reduce((total, item) => total + Number(item.weight) * Math.max(1, Number(item.count ?? item.quantity ?? 1)), 0);
-    const percent = Math.max(0, Math.min(100, (current / capacity) * 100));
-    return { percent: Math.round(percent * 10) / 10, currentOz: Math.round((current / 100) * 100) / 100, maxOz: Math.round((capacity / 100) * 100) / 100, source: "socket" };
+    const maximum = freeCapacity + current;
+    const percent = maximum > 0 ? Math.max(0, Math.min(100, (current / maximum) * 100)) : 0;
+    return {
+      percent: Math.round(percent * 10) / 10,
+      currentOz: Math.round(current) / 100,
+      maxOz: Math.round(maximum) / 100,
+      freeOz,
+      source: "socket"
+    };
   }
 
   const imbuementItemThumbnails = new Map();
