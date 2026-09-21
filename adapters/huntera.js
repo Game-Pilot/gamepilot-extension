@@ -545,6 +545,14 @@
           : inventory.satchel?.[Number(element.getAttribute("data-satchel"))];
       captureItem(item, element);
     });
+    const itemElements = [...document.querySelectorAll("[data-item-id], [data-object-id], [data-type-id], .equipment-slot")];
+    for (const item of Object.values(inventory.equipment || {}).filter(Boolean)) {
+      const itemId = String(item.itemId ?? item.item_id ?? item.id ?? item.typeId ?? item.type_id ?? "");
+      const itemName = String(item.name || item.itemName || item.item_name || "").trim().toLowerCase();
+      const element = itemElements.find((candidate) => ["data-item-id", "data-object-id", "data-type-id"].some((attribute) => String(candidate.getAttribute(attribute) || "") === itemId))
+        || itemElements.find((candidate) => itemName && String(candidate.getAttribute("title") || candidate.getAttribute("aria-label") || "").toLowerCase().includes(itemName));
+      captureItem(item, element);
+    }
     const materials = new Map();
     for (const item of [...(inventory.slots || []), ...(inventory.satchel || [])].filter(Boolean)) {
       const itemId = item.itemId ?? item.item_id ?? item.id ?? item.typeId ?? item.type_id;
