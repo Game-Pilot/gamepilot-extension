@@ -2231,6 +2231,19 @@
     });
   }
 
+  async function openHuntOrganizer() {
+    const ready = await waitUntil(() => firstVisible("#hunt-organize")
+      || [...document.querySelectorAll(".hunt-window .hunt-entry")].some(visible), 5000, 100);
+    if (!ready) return { ok: false, error: "A organização de caçadas não ficou disponível" };
+    const organizer = firstVisible("#hunt-organize");
+    if (!organizer) return { ok: true, alreadyOpen: true };
+    organizer.click();
+    const opened = await waitUntil(() => [...document.querySelectorAll(".hunt-window .hunt-entry")].some(visible), 5000, 100);
+    return opened
+      ? { ok: true }
+      : { ok: false, error: "A organização de caçadas não abriu" };
+  }
+
   async function prepareHuntSelection(payload = {}) {
     const hunt = payload.hunt || {};
     if (characterSelectionVisible()) {
@@ -2250,6 +2263,8 @@
     const huntsTab = document.querySelector('.hunt-tab[data-tab="hunts"]');
     if (!huntsTab) return { ok: false, error: "A aba Hunts não foi encontrada" };
     huntsTab.click();
+    const organizer = await openHuntOrganizer();
+    if (!organizer.ok) return organizer;
     const huntsReady = await waitUntil(() => [...document.querySelectorAll(".hunt-window .hunt-entry")].some(visible), 5000, 100);
     if (!huntsReady) return { ok: false, error: "A lista de caçadas não abriu" };
     const entry = [...document.querySelectorAll(".hunt-window .hunt-entry")].find((item) => visible(item) && matchesHunt(item, target));
