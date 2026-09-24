@@ -1637,7 +1637,7 @@
       const baseKey = itemKeyFromName(name);
       const variantKey = itemId ? `${baseKey}-${itemId}` : baseKey;
       const policy = configuredLootPolicy(accountLoot, { itemId, name });
-      const desired = accountConfigured ? policy !== "ignore" && (policy !== "default" || collectDefaultLoot(itemId)) : configured ? (keys.has(baseKey) || keys.has(variantKey)) : collectDefaultLoot(itemId);
+      const desired = accountConfigured ? policy !== "ignore" && (policy !== "default" || collectDefaultLoot(itemId, accountLoot)) : configured ? (keys.has(baseKey) || keys.has(variantKey)) : collectDefaultLoot(itemId, accountLoot);
       expected.push({ identity: lootControlIdentity(control), desired, name: name || String(itemId) || "item desconhecido" });
       if (control.checked !== desired && setLootControlChecked(control, desired)) changed += 1;
     }
@@ -2429,7 +2429,7 @@
 
   // Huntera weights are hundredths of an ounce; prices are per item.
   const MIN_DEFAULT_LOOT_GP_PER_OZ = 4;
-  function collectDefaultLoot(itemId) {
+  function collectDefaultLoot(itemId, config = {}) {
     if (bossLootItem(itemId) || !socketState.imbuementMaterialIds || socketState.imbuementMaterialIds.has(String(itemId))) return true;
     const items = (socketState.messages["hunt-catalog"]?.hunts || []).flatMap(hunt => hunt.loot || []);
     const item = items.find(candidate => String(candidate.itemId) === String(itemId));
@@ -2441,7 +2441,11 @@
     };
     const prices = [priceFrom(socketState.itemValues?.auction), priceFrom(socketState.itemValues?.npc)].filter(price => price !== null);
     const value = prices.length ? Math.max(...prices) : null;
-    return value === null || value / (weight / 100) >= MIN_DEFAULT_LOOT_GP_PER_OZ;
+    const configuredMinimum = Number(config.minimumLootValuePerOz ?? MIN_DEFAULT_LOOT_GP_PER_OZ);
+    const minimumValuePerOz = Number.isFinite(configuredMinimum) && configuredMinimum >= 0
+      ? configuredMinimum
+      : MIN_DEFAULT_LOOT_GP_PER_OZ;
+    return value === null || value / (weight / 100) >= minimumValuePerOz;
   }
 
   function lootDisposition(item, quote = {}, policy = "default") {

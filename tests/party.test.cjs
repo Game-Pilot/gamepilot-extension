@@ -888,6 +888,17 @@ test("default collection uses the higher market or NPC price and gp per ounce", 
   assert.equal(api.lootDisposition({ itemId: "10", npcValue: 100 }).destination, "warehouse");
 });
 
+test("default collection honors the account minimum gp per ounce", () => {
+  const api = adapter();
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
+  api.applySocketMessage({ type: "hunt-catalog", payload: { hunts: [{ loot: [{ itemId: 10, weight: 1000 }] }] } });
+  api.applySocketMessage({ type: "item-values", payload: { auction: [[10, 50]], npc: [[10, 40]] } });
+  assert.equal(api.collectDefaultLoot("10", { minimumLootValuePerOz: 6 }), false);
+  assert.equal(api.collectDefaultLoot("10", { minimumLootValuePerOz: 5 }), true);
+  assert.equal(api.collectDefaultLoot("10", { minimumLootValuePerOz: 0 }), true);
+  assert.equal(api.collectDefaultLoot("10", { minimumLootValuePerOz: "invalid" }), true);
+});
+
 test("default collection filter updates actual auto-loot controls and honors explicit policies", async () => {
   const entry = { hidden: false, dataset: {}, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Heavy item" }) };
   const control = { disabled: false, checked: true, dataset: { itemId: "10" }, closest: () => entry, click() { this.checked = !this.checked; } };
@@ -899,4 +910,16 @@ test("default collection filter updates actual auto-loot controls and honors exp
   assert.equal(control.checked, false);
   await api.configureLoot({}, { version: 1, items: [{ externalItemId: "10", policy: "warehouse" }] });
   assert.equal(control.checked, true);
+});
+
+test("account minimum gp per ounce updates the actual auto-loot control", async () => {
+  const entry = { hidden: false, dataset: {}, getBoundingClientRect: () => ({ width: 100, height: 30 }), querySelector: () => ({ textContent: "Heavy item" }) };
+  const control = { disabled: false, checked: true, dataset: { itemId: "10" }, closest: () => entry, click() { this.checked = !this.checked; } };
+  const api = adapter([], [control]);
+  api.applySocketMessage({ type: "imbuement-materials", payload: { items: [] } });
+  api.applySocketMessage({ type: "hunt-catalog", payload: { hunts: [{ loot: [{ itemId: 10, weight: 1000 }] }] } });
+  api.applySocketMessage({ type: "item-values", payload: { auction: [[10, 50]], npc: [] } });
+  const result = await api.configureLoot({}, { version: 2, minimumLootValuePerOz: 6, items: [] });
+  assert.equal(result.ok, true);
+  assert.equal(control.checked, false);
 });
